@@ -390,7 +390,6 @@ with tab1:
         abs_net = abs(net)
         gw_change = p.get("cost_change_event", 0) / 10  # GW Price Delta (£m)
 
-        # Threshold Math: Subtract previous change resets from effective GW volume
         effective_net = net - (gw_change * 10 * 50000)
         abs_eff_net = abs(effective_net)
 
@@ -420,8 +419,6 @@ with tab1:
 
     df_tracker = pd.DataFrame(tracker)
 
-    # --- PRIORITY SORTING LOGIC ---
-    # Prioritize active GW price changes first, then sort by Net Transfer volume
     df_risers = df_tracker.sort_values(
         by=["GW Change Raw", "Net Transfers"], ascending=[False, False]
     ).head(top_n)
@@ -511,7 +508,6 @@ with tab2:
 
                 standings = league_json["standings"]["results"]
 
-                # Load manager picks and store prior totals for movement analysis
                 manager_data = []
                 for mgr in standings:
                     picks = fetch_manager_picks(
@@ -530,7 +526,6 @@ with tab2:
                         }
                     )
 
-                # Derive exact mini-league rank trajectory using previous GW total points
                 sorted_by_prev = sorted(
                     manager_data, key=lambda x: x["prev_total"], reverse=True
                 )
@@ -649,7 +644,6 @@ with tab2:
                         eo_val = start_pct + cap_pct
                         is_owned = pid in my_squad_set
 
-                        # Ownership Logic
                         if eo_val >= 50.0 and is_owned:
                             tactic_type = "🛡️ Rank Shield"
                         elif eo_val >= 50.0 and not is_owned:
@@ -670,7 +664,6 @@ with tab2:
                             }
                         )
 
-                        # Performance Logic
                         p_obj = player_obj_dict.get(pid, {})
                         form_val = float(p_obj.get("form", 0.0))
                         xg_val = float(p_obj.get("expected_goals", 0.0))
@@ -810,7 +803,7 @@ with tab2:
                 st.error("Invalid League ID.")
 
 # ------------------------------------------------------------------------------
-# TAB 3: AI SQUAD ADVISOR
+# TAB 3: AI SQUAD ADVISOR (WITH GKP SUPPORT & CROSS-TAB MARKET MOMENTUM)
 # ------------------------------------------------------------------------------
 with tab3:
     st.markdown("### 🤖 AI Squad Optimizer & Executive Transfer Advisor")
@@ -854,6 +847,117 @@ with tab3:
                             (count / total_mgrs) * 100, 1
                         )
 
+            # --- SQUAD OVERVIEW METRICS ---
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("💼 Bank Remaining", f"£{my_picks['Bank']:.1f}m")
+            m2.metric("🔄 Saved Transfers", f"{my_history['Saved FTs']} FT")
+            m3.metric("📉 Active Hits Cost", f"-{my_history['Hits Cost']} pts")
+            m4.metric("🛡️ Available Chips", my_history["Chips Remaining"])
+
+            st.markdown("---")
+
+            # ------------------------------------------------------------------
+            # 🔥 MARKET HOTSPOTS: LINKED WITH TAB 1 MARKET DATA
+            # ------------------------------------------------------------------
+            st.markdown("### 🔥 Market Hotspots (Best Buy Targets)")
+            st.caption(
+                "High Expected Points (xP) assets cross-referenced with Tab 1 real-time market price momentum. Excludes current squad."
+            )
+
+            # Build comprehensive player pool linked with Tab 1 data
+            market_hotspots = []
+            for p in elements:
+                if p["id"] in my_picks["Squad"]:
+                    continue
+
+                form_val = float(p.get("form", 0.0))
+                xg_val = float(p.get("expected_goals", 0.0))
+                xa_val = float(p.get("expected_assists", 0.0))
+                xgi_val = xg_val + xa_val
+                xp_proxy = round((form_val * 0.5) + (xgi_val * 0.5), 2)
+
+                f_info = next_fixtures_map.get(p["team"], {})
+                opp_name = teams.get(f_info.get("opp"), "UNK") if f_info else "N/A"
+                loc = "(H)" if f_info.get("is_home") else "(A)"
+                vs_str = f"{opp_name} {loc}"
+
+                net = p["transfers_in_event"] - p["transfers_out_event"]
+                gw_change = p.get("cost_change_event", 0) / 10
+                effective_net = net - (gw_change * 10 * 50000)
+
+                if gw_change > 0:
+                    status = "✅ Rose"
+                elif abs(effective_net) >= 40000:
+                    status = "🔥 Rising Tonight"
+                elif net > 10000:
+                    status = "📈 Demand"
+                else:
+                    status = "⚪ Stable"
+
+                market_hotspots.append(
+                    {
+                        "ID": p["id"],
+                        "Name": p["web_name"],
+                        "Pos_ID": p["element_type"],
+                        "Pos": POSITION_MAP.get(p["element_type"], "UNK"),
+                        "Price": f"£{p['now_cost'] / 10:.1f}m",
+                        "Cost_Raw": p["now_cost"] / 10,
+                        "Status": status,
+                        "Vs": vs_str,
+                        "xP": xp_proxy,
+                        "Net_Transfers": net,
+                    }
+                )
+
+            df_hotspots = pd.DataFrame(market_hotspots)
+
+            num_rows = st.slider(
+                "🎚️ Display Row Limit (per position):",
+                min_value=3,
+                max_value=7,
+                value=5,
+                key="hs_rows",
+            )
+
+            # 4 Columns Grid (GKP, DEF, MID, FWD)
+            col_gkp, col_def, col_mid, col_fwd = st.columns(4)
+
+            pos_cols = [
+                (col_gkp, 1, "🧤 Top Goalkeepers"),
+                (col_def, 2, "🛡️ Top Defenders"),
+                (col_mid, 3, "🎯 Top Midfielders"),
+                (col_fwd, 4, "⚡ Top Forwards"),
+            ]
+
+            display_fields = ["Name", "Price", "Status", "Vs", "xP"]
+
+            for col_obj, pos_code, title in pos_cols:
+                with col_obj:
+                    st.markdown(f"#### {title}")
+                    sub_df = (
+                        df_hotspots[df_hotspots["Pos_ID"] == pos_code]
+                        .sort_values(
+                            by=["xP", "Net_Transfers"], ascending=[False, False]
+                        )
+                        .head(num_rows)[display_fields]
+                    )
+
+                    calc_height = (len(sub_df) + 1) * 35 + 5
+                    st.dataframe(
+                        sub_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=calc_height,
+                        column_config={
+                            "xP": st.column_config.NumberColumn(format="%.2f"),
+                        },
+                    )
+
+            st.markdown("---")
+
+            # ------------------------------------------------------------------
+            # CURRENT SQUAD METRICS TABLE & RECOMMENDATIONS
+            # ------------------------------------------------------------------
             squad_objs = [
                 player_obj_dict[pid]
                 for pid in my_picks["Squad"]
@@ -870,296 +974,148 @@ with tab3:
                 )
 
                 def compute_xp_and_price_risk(row):
-                    team_id = row["team"]
-                    f_info = next_fixtures_map.get(
-                        team_id, {"fdr": 3, "opp": None, "is_home": True}
-                    )
-                    fdr = f_info["fdr"]
-                    opp_name = teams.get(f_info["opp"], "TBD")
-                    loc = "H" if f_info["is_home"] else "A"
-
+                    form_val = float(row.get("form", 0.0))
                     xg_val = float(row.get("expected_goals", 0.0))
                     xa_val = float(row.get("expected_assists", 0.0))
-                    xgi = xg_val + xa_val
+                    xgi_val = xg_val + xa_val
+                    xp_proxy = round((form_val * 0.5) + (xgi_val * 0.5), 2)
 
-                    pos_mult = 1.3 if row["element_type"] in [3, 4] else 0.9
-                    xp = (
-                        (row["Form_Float"] * 0.4)
-                        + (xgi * 0.4)
-                        + ((6 - fdr) * 0.6)
-                    ) * pos_mult
-
-                    net = row["Net_Transfers"]
-                    status = (
-                        "⚠️ Risk Drop"
-                        if net < -30000
-                        else ("🔥 Rising" if net > 30000 else "Stable")
-                    )
+                    net_transfers = row["Net_Transfers"]
+                    if net_transfers <= -50000:
+                        price_risk = "🚨 Heavy Drop Risk"
+                    elif net_transfers <= -20000:
+                        price_risk = "⚠️ Moderate Risk"
+                    elif net_transfers >= 50000:
+                        price_risk = "🔥 High Rise Potential"
+                    else:
+                        price_risk = "⚪ Stable"
 
                     return pd.Series(
-                        [
-                            round(xp, 2),
-                            fdr,
-                            f"{opp_name} ({loc})",
-                            round(xgi, 2),
-                            status,
-                        ]
+                        [xp_proxy, price_risk], index=["xP_Proxy", "Price_Risk"]
                     )
 
-                df_squad[
-                    ["xP", "FDR", "Next_Fixture", "xGI", "Price_Status"]
-                ] = df_squad.apply(compute_xp_and_price_risk, axis=1)
-
-                falling_squad = df_squad[
-                    df_squad["Net_Transfers"] < -30000
-                ].sort_values(by="Net_Transfers")
-                if not falling_squad.empty:
-                    sell_target = falling_squad.iloc[0]
-                else:
-                    sell_target = df_squad.sort_values(
-                        by="xP", ascending=True
-                    ).iloc[0]
-
-                sorted_by_xp = df_squad.sort_values(by="xP", ascending=False)
-                captain_target = sorted_by_xp.iloc[0]
-                vc_target = sorted_by_xp.iloc[1]
-
-                max_budget = sell_target["Cost_m"] + my_picks["Bank"]
-                target_pos_id = int(sell_target["element_type"])
-                target_pos_label = POSITION_MAP.get(target_pos_id, "DEF")
-
-                market_targets = [
-                    p
-                    for p in elements
-                    if int(p["element_type"]) == target_pos_id
-                    and (p["now_cost"] / 10) <= max_budget
-                    and p["id"] not in my_picks["Squad"]
-                    and p["status"] == "a"
-                ]
-
-                if market_targets:
-                    df_market = pd.DataFrame(market_targets)
-                    df_market["Form_Float"] = df_market["form"].astype(float)
-                    df_market["Net_Transfers"] = (
-                        df_market["transfers_in_event"]
-                        - df_market["transfers_out_event"]
-                    )
-                    df_market[
-                        ["xP", "FDR", "Next_Fixture", "xGI", "Price_Status"]
-                    ] = df_market.apply(compute_xp_and_price_risk, axis=1)
-                    df_market["Target_Score"] = df_market["xP"] + (
-                        df_market["Net_Transfers"] / 50000
-                    )
-                    buy_target = df_market.sort_values(
-                        by="Target_Score", ascending=False
-                    ).iloc[0]
-
-                    (
-                        buy_name,
-                        buy_cost,
-                        buy_xp,
-                        buy_status,
-                    ) = (
-                        buy_target["web_name"],
-                        buy_target["now_cost"] / 10,
-                        buy_target["xP"],
-                        buy_target["Price_Status"],
-                    )
-                    buy_pos_label = POSITION_MAP.get(
-                        int(buy_target["element_type"]), target_pos_label
-                    )
-                else:
-                    buy_name, buy_cost, buy_xp, buy_status = (
-                        "No option",
-                        0.0,
-                        0.0,
-                        "Stable",
-                    )
-                    buy_pos_label = target_pos_label
-
-                # Positional Target Tables
-                st.markdown("#### 🔥 Market Hotspots (Best Buy Targets)")
-                st.caption(
-                    "High Expected Points (xP) and positive transfer momentum. Excludes current squad."
+                df_squad[["xP_Proxy", "Price_Risk"]] = df_squad.apply(
+                    compute_xp_and_price_risk, axis=1
                 )
 
-                unowned_elements = [
-                    p
-                    for p in elements
-                    if p["id"] not in my_picks["Squad"] and p["status"] == "a"
-                ]
-                df_unowned = pd.DataFrame(unowned_elements)
-                df_unowned["Form_Float"] = df_unowned["form"].astype(float)
-                df_unowned["Cost_m"] = df_unowned["now_cost"] / 10
-                df_unowned["Net_Transfers"] = (
-                    df_unowned["transfers_in_event"]
-                    - df_unowned["transfers_out_event"]
-                )
-                df_unowned[
-                    ["xP", "FDR", "Next_Fixture", "xGI", "Price_Status"]
-                ] = df_unowned.apply(compute_xp_and_price_risk, axis=1)
-                df_unowned["Hybrid_Score"] = (df_unowned["xP"] * 0.6) + (
-                    (df_unowned["Net_Transfers"] / 20000) * 0.4
+                def get_fixture_info(row):
+                    t_id = row["team"]
+                    f_info = next_fixtures_map.get(t_id, {})
+                    if not f_info:
+                        return "N/A", "N/A", 3
+                    opp_name = teams.get(f_info["opp"], "UNK")
+                    loc = "(H)" if f_info["is_home"] else "(A)"
+                    return f"{opp_name} {loc}", f_info["fdr"], f_info["fdr"]
+
+                fixture_data = df_squad.apply(get_fixture_info, axis=1)
+                df_squad["Next_Fixture"] = [f[0] for f in fixture_data]
+                df_squad["FDR"] = [f[1] for f in fixture_data]
+                df_squad["ML_Ownership"] = df_squad["id"].map(
+                    lambda x: f"{ml_ownership_map.get(x, 0.0):.1f}%"
                 )
 
-                col_def, col_mid, col_fwd = st.columns(3)
-
-                def render_position_table(pos_id, title, icon, container):
-                    pos_df = (
-                        df_unowned[df_unowned["element_type"] == pos_id]
-                        .sort_values(by="Hybrid_Score", ascending=False)
-                        .head(3)
-                        .copy()
-                    )
-                    pos_df_display = pos_df[
-                        ["web_name", "Cost_m", "Price_Status", "Next_Fixture", "xP"]
-                    ].copy()
-                    pos_df_display.columns = [
-                        "Name",
-                        "Price",
-                        "Status",
-                        "Vs",
-                        "xP",
-                    ]
-
-                    with container:
-                        st.markdown(f"##### {icon} {title}")
-                        st.dataframe(
-                            pos_df_display,
-                            use_container_width=True,
-                            hide_index=True,
-                            column_config={
-                                "Price": st.column_config.NumberColumn(
-                                    format="£%.1fm"
-                                ),
-                                "xP": st.column_config.NumberColumn(
-                                    format="%.2f"
-                                ),
-                            },
+                # Price Risk Alert Banner
+                high_risk_players = df_squad[df_squad["Net_Transfers"] <= -50000]
+                if not high_risk_players.empty:
+                    for _, hr_p in high_risk_players.iterrows():
+                        st.markdown(
+                            f"""
+                            <div class="rec-card rec-card-danger">
+                                🚨 <strong>Urgent Price Risk Alert:</strong> <strong>{hr_p['web_name']}</strong> 
+                                has heavy net sales (<code>{hr_p['Net_Transfers']:,} transfers out</code>). 
+                                Execute transfer early to preserve squad value.
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
                         )
 
-                render_position_table(2, "Top Defenders", "🛡️", col_def)
-                render_position_table(3, "Top Midfielders", "🎯", col_mid)
-                render_position_table(4, "Top Forwards", "⚡", col_fwd)
+                # Current Squad Table
+                st.markdown("#### 📋 Current Squad Analytical Breakdown")
+                display_cols = [
+                    "web_name",
+                    "element_type",
+                    "Cost_m",
+                    "Form_Float",
+                    "xP_Proxy",
+                    "Next_Fixture",
+                    "FDR",
+                    "ML_Ownership",
+                    "Price_Risk",
+                ]
+
+                df_squad_display = df_squad[display_cols].copy()
+                df_squad_display["element_type"] = df_squad_display[
+                    "element_type"
+                ].map(POSITION_MAP)
+                df_squad_display.rename(
+                    columns={
+                        "web_name": "Player",
+                        "element_type": "Pos",
+                        "Cost_m": "Cost (£m)",
+                        "Form_Float": "Form",
+                        "xP_Proxy": "Est. xP",
+                        "Next_Fixture": "Next Match",
+                        "ML_Ownership": "ML Ownership",
+                        "Price_Risk": "Market Risk",
+                    },
+                    inplace=True,
+                )
+
+                st.dataframe(
+                    df_squad_display.sort_values(by="Est. xP", ascending=False),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Cost (£m)": st.column_config.NumberColumn(format="£%.1fm"),
+                        "Form": st.column_config.NumberColumn(format="%.1f pts"),
+                        "Est. xP": st.column_config.NumberColumn(format="%.2f pts"),
+                        "FDR": st.column_config.NumberColumn(format="Difficulty: %d"),
+                    },
+                )
 
                 st.markdown("---")
 
-                # Executive Alerts
-                if not falling_squad.empty:
+                # Strategic Recommendations
+                st.markdown("#### 💡 Strategic Transfer Recommendations")
+                sell_candidates = df_squad[
+                    (df_squad["Form_Float"] < 3.0)
+                    | (df_squad["Net_Transfers"] < -30000)
+                ]
+
+                if not sell_candidates.empty:
+                    for _, sell_p in sell_candidates.iterrows():
+                        pos_id = sell_p["element_type"]
+                        max_budget = sell_p["Cost_m"] + my_picks["Bank"]
+
+                        replacements = [
+                            p
+                            for p in market_hotspots
+                            if p["Pos_ID"] == pos_id
+                            and p["Cost_Raw"] <= max_budget
+                        ]
+                        replacements = sorted(
+                            replacements, key=lambda x: x["xP"], reverse=True
+                        )
+
+                        if replacements:
+                            top_target = replacements[0]
+                            st.markdown(
+                                f"""
+                                <div class="rec-card">
+                                    <strong>🔄 Suggested Transfer Call:</strong><br/>
+                                    <strong>OUT:</strong> {sell_p['web_name']} ({POSITION_MAP.get(pos_id)}) — Form: <code>{sell_p['Form_Float']}</code> | Price: <code>£{sell_p['Cost_m']:.1f}m</code><br/>
+                                    <strong>IN:</strong> {top_target['Name']} ({top_target['Pos']}) — Est. xP: <code>{top_target['xP']}</code> | Market Status: <code>{top_target['Status']}</code> | Price: <code>{top_target['Price']}</code>
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+                else:
                     st.markdown(
-                        f"""
-                        <div class="rec-card rec-card-danger">
-                            <strong style="color: #dc2626;">🚨 Urgent Price Risk Alert:</strong> 
-                            <strong>{sell_target['web_name']}</strong> has heavy net sales (<strong>{sell_target['Net_Transfers']:,} transfers out</strong>). 
-                            Execute transfer early to preserve squad value.
+                        """
+                        <div class="rec-card">
+                            <strong>✅ Squad Stable:</strong> No immediate high-priority forced transfers detected. 
+                            Consider rolling your Free Transfer for maximum flexibility next Gameweek.
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
-
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    st.metric(
-                        "💡 Recommended Strategy",
-                        "HOLD CHIPS"
-                        if current_gw <= 3
-                        else "WILDCARD READY",
-                    )
-                    st.caption(
-                        f"Banked Transfers: **{my_history['Saved FTs']} FT** | In Bank: **£{my_picks['Bank']:.1f}m**"
-                    )
-
-                with col_b:
-                    st.metric(
-                        "👑 Priority Captain",
-                        f"{captain_target['web_name']} ({captain_target['xP']} xP)",
-                    )
-                    st.caption(
-                        f"Fixture: **{captain_target['Next_Fixture']}** | Vice: **{vc_target['web_name']}**"
-                    )
-
-                with col_c:
-                    st.metric(
-                        "🔁 Tactical Transfer Call",
-                        f"OUT: {sell_target['web_name']} ({target_pos_label})",
-                    )
-                    st.caption(
-                        f"IN: **{buy_name}** ({buy_pos_label} | £{buy_cost:.1f}m | {buy_xp} xP)"
-                    )
-
-                st.markdown("---")
-
-                st.markdown("#### 📋 Squad Performance & Risk Audit")
-
-                df_squad["Pos"] = df_squad["element_type"].map(POSITION_MAP)
-                df_squad["Global_Own_Str"] = (
-                    df_squad["selected_by_percent"]
-                    .astype(float)
-                    .map(lambda v: f"{v:.1f}%")
-                )
-                df_squad["ML_Own_Str"] = df_squad["id"].map(
-                    lambda pid: f"{ml_ownership_map.get(pid, 0.0):.1f}%"
-                )
-
-                display_cols = [
-                    "web_name",
-                    "Pos",
-                    "Cost_m",
-                    "xP",
-                    "Price_Status",
-                    "Net_Transfers",
-                    "Next_Fixture",
-                    "FDR",
-                    "xGI",
-                    "Form_Float",
-                    "total_points",
-                    "Global_Own_Str",
-                    "ML_Own_Str",
-                ]
-                df_squad_display = df_squad[display_cols].copy()
-                df_squad_display.columns = [
-                    "Name",
-                    "Position",
-                    "Cost (£m)",
-                    "Expected Pts (xP)",
-                    "Price Status",
-                    "Net Transfers",
-                    "Next Fixture",
-                    "FDR",
-                    "xGI (xG+xA)",
-                    "Form",
-                    "Total Pts",
-                    "Global Own %",
-                    "Mini-League Own %",
-                ]
-
-                table_height = (len(df_squad_display) + 1) * 35 + 5
-
-                st.dataframe(
-                    df_squad_display.sort_values(
-                        by="Expected Pts (xP)", ascending=False
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=table_height,
-                    column_config={
-                        "Cost (£m)": st.column_config.NumberColumn(
-                            format="£%.1fm"
-                        ),
-                        "Expected Pts (xP)": st.column_config.NumberColumn(
-                            format="%.2f pts"
-                        ),
-                        "Net Transfers": st.column_config.NumberColumn(
-                            format="%+d"
-                        ),
-                        "FDR": st.column_config.NumberColumn(
-                            format="Rating: %d"
-                        ),
-                        "xGI (xG+xA)": st.column_config.NumberColumn(
-                            format="%.2f"
-                        ),
-                        "Form": st.column_config.NumberColumn(
-                            format="%.1f pts"
-                        ),
-                    },
-                )
