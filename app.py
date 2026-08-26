@@ -388,7 +388,7 @@ with tab1:
     for p in elements:
         net = p["transfers_in_event"] - p["transfers_out_event"]
         abs_net = abs(net)
-        gw_change = p.get("cost_change_event", 0) / 10  # GW Price Delta (£m)
+        gw_change = p.get("cost_change_event", 0) / 10
 
         effective_net = net - (gw_change * 10 * 50000)
         abs_eff_net = abs(effective_net)
@@ -861,13 +861,29 @@ with tab3:
             # ------------------------------------------------------------------
             st.markdown("### 🔥 Market Hotspots (Best Buy Targets)")
             st.caption(
-                "High Expected Points (xP) assets cross-referenced with Tab 1 real-time market price momentum. Excludes current squad."
+                "High Expected Points (xP) assets cross-referenced with Tab 1 real-time market price momentum."
             )
+
+            # Controls: Toggle to hide/show owned players & Display Slider
+            col_ctrl1, col_ctrl2 = st.columns([1, 2])
+            with col_ctrl1:
+                hide_owned = st.toggle("👁️ Hide Owned Players", value=True, key="hs_hide_owned")
+            with col_ctrl2:
+                num_rows = st.slider(
+                    "🎚️ Display Row Limit (per position):",
+                    min_value=3,
+                    max_value=7,
+                    value=5,
+                    key="hs_rows",
+                )
+
+            # Build player set conditionally based on toggle state
+            my_squad_ids = set(my_picks["Squad"]) if hide_owned else set()
 
             # Build comprehensive player pool linked with Tab 1 data
             market_hotspots = []
             for p in elements:
-                if p["id"] in my_picks["Squad"]:
+                if p["id"] in my_squad_ids:
                     continue
 
                 form_val = float(p.get("form", 0.0))
@@ -910,14 +926,6 @@ with tab3:
                 )
 
             df_hotspots = pd.DataFrame(market_hotspots)
-
-            num_rows = st.slider(
-                "🎚️ Display Row Limit (per position):",
-                min_value=3,
-                max_value=7,
-                value=5,
-                key="hs_rows",
-            )
 
             # 4 Columns Grid (GKP, DEF, MID, FWD)
             col_gkp, col_def, col_mid, col_fwd = st.columns(4)
