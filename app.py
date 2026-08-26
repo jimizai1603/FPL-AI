@@ -861,174 +861,261 @@ with tab3:
             # ------------------------------------------------------------------
             st.markdown("### 🔥 Market Hotspots (Best Buy Targets)")
             st.caption(
-                "High Expected Points ($xP$) assets cross-referenced with Tab 1 real-time market price momentum. Excludes current squad."
+                "High Expected Points (xP) assets cross-referenced with Tab 1 real-time market price momentum. Excludes current squad."
             )
 
+            # Build comprehensive player pool linked with Tab 1 data
             market_hotspots = []
             for p in elements:
-                pid = p["id"]
-                if pid in my_picks["Squad"]:
-                    continue  # Exclude players already owned
+                if p["id"] in my_picks["Squad"]:
+                    continue
 
-                pos_str = POSITION_MAP.get(p["element_type"], "UNK")
-                cost = p["now_cost"] / 10
                 form_val = float(p.get("form", 0.0))
                 xg_val = float(p.get("expected_goals", 0.0))
                 xa_val = float(p.get("expected_assists", 0.0))
                 xgi_val = xg_val + xa_val
+                xp_proxy = round((form_val * 0.5) + (xgi_val * 0.5), 2)
 
-                # Position-Weighted expected points (xP) heuristic
-                if pos_str == "GKP":
-                    saves_per_90 = float(p.get("saves", 0)) / max(1, float(p.get("minutes", 1)) / 90)
-                    xp_val = round((form_val * 0.6) + (saves_per_90 * 0.4), 2)
-                elif pos_str == "DEF":
-                    xp_val = round((form_val * 0.5) + (xgi_val * 0.3) + (float(p.get("clean_sheets", 0)) * 0.2), 2)
-                else:
-                    xp_val = round((form_val * 0.4) + (xgi_val * 0.6), 2)
+                f_info = next_fixtures_map.get(p["team"], {})
+                opp_name = teams.get(f_info.get("opp"), "UNK") if f_info else "N/A"
+                loc = "(H)" if f_info.get("is_home") else "(A)"
+                vs_str = f"{opp_name} {loc}"
 
-                # Cross-reference Tab 1 market momentum
-                net_transfers = p["transfers_in_event"] - p["transfers_out_event"]
+                net = p["transfers_in_event"] - p["transfers_out_event"]
                 gw_change = p.get("cost_change_event", 0) / 10
-                abs_eff_net = abs(net_transfers - (gw_change * 10 * 50000))
+                effective_net = net - (gw_change * 10 * 50000)
 
                 if gw_change > 0:
-                    market_status = f"✅ Rose (+£{gw_change:.1f}m)"
-                elif abs_eff_net >= 40000:
-                    market_status = "🔥 Rising Soon"
-                elif net_transfers > 5000:
-                    market_status = "📈 High Demand"
+                    status = "✅ Rose"
+                elif abs(effective_net) >= 40000:
+                    status = "🔥 Rising Tonight"
+                elif net > 10000:
+                    status = "📈 Demand"
                 else:
-                    market_status = "⚪ Stable"
-
-                # Fixture Difficulty for Next GW
-                team_id = p["team"]
-                next_fix = next_fixtures_map.get(team_id, {"opp": "TBD", "fdr": 3, "is_home": True})
-                opp_name = teams.get(next_fix["opp"], "UNK")
-                loc = "H" if next_fix["is_home"] else "A"
-                fixture_str = f"{opp_name} ({loc}) [FDR {next_fix['fdr']}]"
+                    status = "⚪ Stable"
 
                 market_hotspots.append(
                     {
-                        "Player": p["web_name"],
-                        "Pos": pos_str,
-                        "Team": teams.get(team_id, "UNK"),
-                        "Cost (£m)": cost,
-                        "Est. xP": xp_val,
-                        "Form": form_val,
-                        "xGI": round(xgi_val, 2),
-                        "Next Fixture": fixture_str,
-                        "Market Momentum": market_status,
-                        "ML Own %": f"{ml_ownership_map.get(pid, 0.0):.1f}%",
+                        "ID": p["id"],
+                        "Name": p["web_name"],
+                        "Pos_ID": p["element_type"],
+                        "Pos": POSITION_MAP.get(p["element_type"], "UNK"),
+                        "Price": f"£{p['now_cost'] / 10:.1f}m",
+                        "Cost_Raw": p["now_cost"] / 10,
+                        "Status": status,
+                        "Vs": vs_str,
+                        "xP": xp_proxy,
+                        "Net_Transfers": net,
                     }
                 )
 
             df_hotspots = pd.DataFrame(market_hotspots)
-            df_top_targets = df_hotspots.sort_values(by="Est. xP", ascending=False).head(10)
 
-            st.dataframe(
-                df_top_targets,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Cost (£m)": st.column_config.NumberColumn(format="£%.1fm"),
-                    "Est. xP": st.column_config.NumberColumn(format="%.2f pts"),
-                    "Form": st.column_config.NumberColumn(format="%.1f"),
-                },
+            num_rows = st.slider(
+                "🎚️ Display Row Limit (per position):",
+                min_value=3,
+                max_value=7,
+                value=5,
+                key="hs_rows",
             )
+
+            # 4 Columns Grid (GKP, DEF, MID, FWD)
+            col_gkp, col_def, col_mid, col_fwd = st.columns(4)
+
+            pos_cols = [
+                (col_gkp, 1, "🧤 Top Goalkeepers"),
+                (col_def, 2, "🛡️ Top Defenders"),
+                (col_mid, 3, "🎯 Top Midfielders"),
+                (col_fwd, 4, "⚡ Top Forwards"),
+            ]
+
+            display_fields = ["Name", "Price", "Status", "Vs", "xP"]
+
+            for col_obj, pos_code, title in pos_cols:
+                with col_obj:
+                    st.markdown(f"#### {title}")
+                    sub_df = (
+                        df_hotspots[df_hotspots["Pos_ID"] == pos_code]
+                        .sort_values(
+                            by=["xP", "Net_Transfers"], ascending=[False, False]
+                        )
+                        .head(num_rows)[display_fields]
+                    )
+
+                    calc_height = (len(sub_df) + 1) * 35 + 5
+                    st.dataframe(
+                        sub_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=calc_height,
+                        column_config={
+                            "xP": st.column_config.NumberColumn(format="%.2f"),
+                        },
+                    )
 
             st.markdown("---")
 
             # ------------------------------------------------------------------
-            # 🤖 AI OPTIMAL LINEUP & CAPTAIN RECOMMENDATIONS
+            # CURRENT SQUAD METRICS TABLE & RECOMMENDATIONS
             # ------------------------------------------------------------------
-            st.markdown("### 📋 Optimized GW Lineup & Captain Strategy")
+            squad_objs = [
+                player_obj_dict[pid]
+                for pid in my_picks["Squad"]
+                if pid in player_obj_dict
+            ]
 
-            squad_details = []
-            for pid in my_picks["Squad"]:
-                p = player_obj_dict.get(pid, {})
-                pos_str = POSITION_MAP.get(p.get("element_type", 1), "UNK")
-                form_val = float(p.get("form", 0.0))
-                xgi_val = float(p.get("expected_goals", 0.0)) + float(p.get("expected_assists", 0.0))
-                
-                # Heuristic xP
-                xp_val = round((form_val * 0.5) + (xgi_val * 0.5), 2)
-                
-                squad_details.append({
-                    "id": pid,
-                    "name": p.get("web_name", "Unknown"),
-                    "pos": pos_str,
-                    "pos_code": p.get("element_type", 1),
-                    "cost": p.get("now_cost", 0) / 10,
-                    "xp": xp_val,
-                    "form": form_val
-                })
-
-            df_my_squad = pd.DataFrame(squad_details).sort_values(by="xp", ascending=False)
-
-            # High-level Captain & Vice-Captain Suggestions
-            best_captain = df_my_squad.iloc[0]
-            best_vc = df_my_squad.iloc[1]
-
-            c_cap1, c_cap2 = st.columns(2)
-            with c_cap1:
-                st.markdown(
-                    f"""
-                    <div class="rec-card">
-                        <h4>👑 Recommended Captain: <strong>{best_captain['name']}</strong></h4>
-                        <p><strong>Pos:</strong> {best_captain['pos']} | <strong>Est. xP:</strong> {best_captain['xp']} pts | <strong>Form:</strong> {best_captain['form']}</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            with c_cap2:
-                st.markdown(
-                    f"""
-                    <div class="rec-card">
-                        <h4>🛡️ Recommended Vice-Captain: <strong>{best_vc['name']}</strong></h4>
-                        <p><strong>Pos:</strong> {best_vc['pos']} | <strong>Est. xP:</strong> {best_vc['xp']} pts | <strong>Form:</strong> {best_vc['form']}</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+            if squad_objs:
+                df_squad = pd.DataFrame(squad_objs)
+                df_squad["Form_Float"] = df_squad["form"].astype(float)
+                df_squad["Cost_m"] = df_squad["now_cost"] / 10
+                df_squad["Net_Transfers"] = (
+                    df_squad["transfers_in_event"]
+                    - df_squad["transfers_out_event"]
                 )
 
-            # Display Starting XI vs Bench
-            gkps = df_my_squad[df_my_squad["pos"] == "GKP"]
-            outfielders = df_my_squad[df_my_squad["pos"] != "GKP"]
+                def compute_xp_and_price_risk(row):
+                    form_val = float(row.get("form", 0.0))
+                    xg_val = float(row.get("expected_goals", 0.0))
+                    xa_val = float(row.get("expected_assists", 0.0))
+                    xgi_val = xg_val + xa_val
+                    xp_proxy = round((form_val * 0.5) + (xgi_val * 0.5), 2)
 
-            starting_gkp = gkps.head(1)
-            bench_gkp = gkps.tail(1)
+                    net_transfers = row["Net_Transfers"]
+                    if net_transfers <= -50000:
+                        price_risk = "🚨 Heavy Drop Risk"
+                    elif net_transfers <= -20000:
+                        price_risk = "⚠️ Moderate Risk"
+                    elif net_transfers >= 50000:
+                        price_risk = "🔥 High Rise Potential"
+                    else:
+                        price_risk = "⚪ Stable"
 
-            starting_outfield = outfielders.head(10)
-            bench_outfield = outfielders.tail(4)
+                    return pd.Series(
+                        [xp_proxy, price_risk], index=["xP_Proxy", "Price_Risk"]
+                    )
 
-            starting_xi = pd.concat([starting_gkp, starting_outfield]).sort_values(by="pos_code")
-            bench_squad = pd.concat([bench_gkp, bench_outfield])
+                df_squad[["xP_Proxy", "Price_Risk"]] = df_squad.apply(
+                    compute_xp_and_price_risk, axis=1
+                )
 
-            col_s1, col_s2 = st.columns(2)
-            with col_s1:
-                st.markdown("#### ⚽ Optimal Starting XI")
+                def get_fixture_info(row):
+                    t_id = row["team"]
+                    f_info = next_fixtures_map.get(t_id, {})
+                    if not f_info:
+                        return "N/A", "N/A", 3
+                    opp_name = teams.get(f_info["opp"], "UNK")
+                    loc = "(H)" if f_info["is_home"] else "(A)"
+                    return f"{opp_name} {loc}", f_info["fdr"], f_info["fdr"]
+
+                fixture_data = df_squad.apply(get_fixture_info, axis=1)
+                df_squad["Next_Fixture"] = [f[0] for f in fixture_data]
+                df_squad["FDR"] = [f[1] for f in fixture_data]
+                df_squad["ML_Ownership"] = df_squad["id"].map(
+                    lambda x: f"{ml_ownership_map.get(x, 0.0):.1f}%"
+                )
+
+                # Price Risk Alert Banner
+                high_risk_players = df_squad[df_squad["Net_Transfers"] <= -50000]
+                if not high_risk_players.empty:
+                    for _, hr_p in high_risk_players.iterrows():
+                        st.markdown(
+                            f"""
+                            <div class="rec-card rec-card-danger">
+                                🚨 <strong>Urgent Price Risk Alert:</strong> <strong>{hr_p['web_name']}</strong> 
+                                has heavy net sales (<code>{hr_p['Net_Transfers']:,} transfers out</code>). 
+                                Execute transfer early to preserve squad value.
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+                # Current Squad Table
+                st.markdown("#### 📋 Current Squad Analytical Breakdown")
+                display_cols = [
+                    "web_name",
+                    "element_type",
+                    "Cost_m",
+                    "Form_Float",
+                    "xP_Proxy",
+                    "Next_Fixture",
+                    "FDR",
+                    "ML_Ownership",
+                    "Price_Risk",
+                ]
+
+                df_squad_display = df_squad[display_cols].copy()
+                df_squad_display["element_type"] = df_squad_display[
+                    "element_type"
+                ].map(POSITION_MAP)
+                df_squad_display.rename(
+                    columns={
+                        "web_name": "Player",
+                        "element_type": "Pos",
+                        "Cost_m": "Cost (£m)",
+                        "Form_Float": "Form",
+                        "xP_Proxy": "Est. xP",
+                        "Next_Fixture": "Next Match",
+                        "ML_Ownership": "ML Ownership",
+                        "Price_Risk": "Market Risk",
+                    },
+                    inplace=True,
+                )
+
                 st.dataframe(
-                    starting_xi[["name", "pos", "cost", "xp"]],
+                    df_squad_display.sort_values(by="Est. xP", ascending=False),
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "name": "Player",
-                        "pos": "Pos",
-                        "cost": st.column_config.NumberColumn("Cost", format="£%.1fm"),
-                        "xp": st.column_config.NumberColumn("Est. xP", format="%.2f pts"),
+                        "Cost (£m)": st.column_config.NumberColumn(format="£%.1fm"),
+                        "Form": st.column_config.NumberColumn(format="%.1f pts"),
+                        "Est. xP": st.column_config.NumberColumn(format="%.2f pts"),
+                        "FDR": st.column_config.NumberColumn(format="Difficulty: %d"),
                     },
                 )
 
-            with col_s2:
-                st.markdown("#### 🪑 Bench Order")
-                st.dataframe(
-                    bench_squad[["name", "pos", "cost", "xp"]],
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "name": "Player",
-                        "pos": "Pos",
-                        "cost": st.column_config.NumberColumn("Cost", format="£%.1fm"),
-                        "xp": st.column_config.NumberColumn("Est. xP", format="%.2f pts"),
-                    },
-                )
+                st.markdown("---")
+
+                # Strategic Recommendations
+                st.markdown("#### 💡 Strategic Transfer Recommendations")
+                sell_candidates = df_squad[
+                    (df_squad["Form_Float"] < 3.0)
+                    | (df_squad["Net_Transfers"] < -30000)
+                ]
+
+                if not sell_candidates.empty:
+                    for _, sell_p in sell_candidates.iterrows():
+                        pos_id = sell_p["element_type"]
+                        max_budget = sell_p["Cost_m"] + my_picks["Bank"]
+
+                        replacements = [
+                            p
+                            for p in market_hotspots
+                            if p["Pos_ID"] == pos_id
+                            and p["Cost_Raw"] <= max_budget
+                        ]
+                        replacements = sorted(
+                            replacements, key=lambda x: x["xP"], reverse=True
+                        )
+
+                        if replacements:
+                            top_target = replacements[0]
+                            st.markdown(
+                                f"""
+                                <div class="rec-card">
+                                    <strong>🔄 Suggested Transfer Call:</strong><br/>
+                                    <strong>OUT:</strong> {sell_p['web_name']} ({POSITION_MAP.get(pos_id)}) — Form: <code>{sell_p['Form_Float']}</code> | Price: <code>£{sell_p['Cost_m']:.1f}m</code><br/>
+                                    <strong>IN:</strong> {top_target['Name']} ({top_target['Pos']}) — Est. xP: <code>{top_target['xP']}</code> | Market Status: <code>{top_target['Status']}</code> | Price: <code>{top_target['Price']}</code>
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+                else:
+                    st.markdown(
+                        """
+                        <div class="rec-card">
+                            <strong>✅ Squad Stable:</strong> No immediate high-priority forced transfers detected. 
+                            Consider rolling your Free Transfer for maximum flexibility next Gameweek.
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
