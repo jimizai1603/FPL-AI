@@ -130,7 +130,6 @@ st.markdown(
 # ------------------------------------------------------------------------------
 # GLOBAL CONSTANTS & API HELPERS
 # ------------------------------------------------------------------------------
-HEADERS = {"User-Agent": "Mozilla/5.0"}
 DEFAULT_LEAGUE_ID = "1304670"
 MY_TEAM_ID = "4224092"
 
@@ -141,15 +140,15 @@ ALL_CHIPS = ["WILDCARD", "FREEHIT", "BBOOST", "3XC"]
 @st.cache_data(ttl=300)
 def fetch_fpl_data():
     url = "https://fantasy.premierleague.com/api/bootstrap-static/"
-    res = requests.get(url, headers=HEADERS)
+    res = requests.get(url)
     return res.json()
 
 
 @st.cache_data(ttl=300)
 def fetch_fixtures_data():
     url = "https://fantasy.premierleague.com/api/fixtures/"
-    res = requests.get(url, headers=HEADERS)
-    return res.json() if res.status_code == 200 else []
+    res = requests.get(url)
+    return res.json()
 
 
 def fetch_league_data(league_id):
@@ -160,11 +159,11 @@ def fetch_league_data(league_id):
 
     while True:
         url = f"https://fantasy.premierleague.com/api/leagues-classic/{league_id}/standings/?page_standings={page}"
-        res = requests.get(url, headers=HEADERS)
+        res = requests.get(url)
         if res.status_code != 200:
             break
-
         data = res.json()
+
         league_name = data.get("league", {}).get("name", league_name)
         results = data.get("standings", {}).get("results", [])
 
@@ -212,7 +211,7 @@ def calculate_saved_fts_and_history(entry_id, target_gw):
     hist_url = (
         f"https://fantasy.premierleague.com/api/entry/{entry_id}/history/"
     )
-    res = requests.get(hist_url, headers=HEADERS)
+    res = requests.get(hist_url)
     if res.status_code != 200:
         return {
             "Chips Used": "None",
@@ -220,8 +219,8 @@ def calculate_saved_fts_and_history(entry_id, target_gw):
             "Hits Cost": 0,
             "Saved FTs": 1,
         }
-
     data = res.json()
+
     used_chips_raw = [c["name"].upper() for c in data.get("chips", [])]
     chips_used_str = ", ".join(used_chips_raw) if used_chips_raw else "None"
 
@@ -268,7 +267,7 @@ def calculate_saved_fts_and_history(entry_id, target_gw):
 
 def fetch_manager_picks(entry_id, target_gw, player_dict):
     picks_url = f"https://fantasy.premierleague.com/api/entry/{entry_id}/event/{target_gw}/picks/"
-    res = requests.get(picks_url, headers=HEADERS)
+    res = requests.get(picks_url)
     if res.status_code != 200:
         return {
             "Bank": 0.0,
@@ -281,8 +280,8 @@ def fetch_manager_picks(entry_id, target_gw, player_dict):
             "GW_Pts": 0,
             "GW_Rank": "-",
         }
-
     p_data = res.json()
+
     entry_hist = p_data.get("entry_history", {})
     bank = entry_hist.get("bank", 0) / 10
     bench_pts = entry_hist.get("points_on_bench", 0)
@@ -389,37 +388,53 @@ with tab1:
     for p in elements:
         net = p["transfers_in_event"] - p["transfers_out_event"]
         abs_net = abs(net)
+        gw_change = p.get("cost_change_event", 0) / 10  # GW Price Delta (£m)
 
-        if abs_net >= 40000:
-            days_str = "🔥 Tonight"
-        elif abs_net > 0:
-            days_est = math.ceil((40000 - abs_net) / abs_net)
-            days_str = "1 day" if days_est <= 1 else f"~{days_est} days"
+        # Threshold Math: Subtract previous change resets from effective GW volume
+        effective_net = net - (gw_change * 10 * 50000)
+        abs_eff_net = abs(effective_net)
+
+        if gw_change > 0:
+            status = f"✅ Rose GW{current_gw} (+£{gw_change:.1f}m)"
+        elif gw_change < 0:
+            status = f"🔻 Dropped GW{current_gw} (-£{abs(gw_change):.1f}m)"
+        elif abs_eff_net >= 40000:
+            status = "🔥 Tonight"
+        elif abs_eff_net > 0:
+            days_est = math.ceil((40000 - abs_eff_net) / abs_eff_net)
+            status = "1 day" if days_est <= 1 else f"~{days_est} days"
         else:
-            days_str = "No momentum"
+            status = "No momentum"
 
         tracker.append(
             {
                 "Name": p["web_name"],
                 "Pos": POSITION_MAP.get(p["element_type"], "UNK"),
                 "Cost (£m)": p["now_cost"] / 10,
+                "GW Change Raw": gw_change,
+                "GW Change": f"+£{gw_change:.1f}m" if gw_change > 0 else (f"-£{abs(gw_change):.1f}m" if gw_change < 0 else "£0.0m"),
                 "Net Transfers": net,
-                "Est. Price Change": days_str,
+                "Est. Price Change": status,
             }
         )
 
     df_tracker = pd.DataFrame(tracker)
+
+    # --- PRIORITY SORTING LOGIC ---
+    # Prioritize active GW price changes first, then sort by Net Transfer volume
     df_risers = df_tracker.sort_values(
-        by="Net Transfers", ascending=False
+        by=["GW Change Raw", "Net Transfers"], ascending=[False, False]
     ).head(top_n)
-    df_fallers = df_tracker.sort_values(by="Net Transfers", ascending=True).head(
-        top_n
-    )
+
+    df_fallers = df_tracker.sort_values(
+        by=["GW Change Raw", "Net Transfers"], ascending=[True, True]
+    ).head(top_n)
 
     column_order = [
         "Name",
         "Pos",
         "Cost (£m)",
+        "GW Change",
         "Net Transfers",
         "Est. Price Change",
     ]
