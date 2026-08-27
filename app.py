@@ -396,7 +396,7 @@ with tab1:
         if gw_change > 0:
             status = f"✅ Rose GW{current_gw} (+£{gw_change:.1f}m)"
         elif gw_change < 0:
-            status = f"🔻 Dropped GW{current_gw} (-£{abs(gw_change):.1f}m)"
+            status = f"❌ Dropped GW{current_gw} (-£{abs(gw_change):.1f}m)"
         elif abs_eff_net >= 40000:
             status = "🔥 Tonight"
         elif abs_eff_net > 0:
