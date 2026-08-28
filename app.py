@@ -1,8 +1,14 @@
 import datetime
 import math
+import re
 import pandas as pd
 import requests
 import streamlit as st
+
+try:
+    import bs4
+except ImportError:
+    bs4 = None
 
 # ------------------------------------------------------------------------------
 # PAGE CONFIGURATION
@@ -20,24 +26,15 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Force high-contrast Light Theme global canvas */
     html, body, [data-testid="stAppViewContainer"] {
         background-color: #f8fafc !important;
         color: #0f172a !important;
     }
-    
-    /* Universal Typography & Label Contrast */
-    h1, h2, h3, h4, h5, h6, 
-    label, 
-    div[data-testid="stMetricLabel"] p, 
-    .stCaption p, 
-    div[data-testid="stMarkdownContainer"] p {
+    h1, h2, h3, h4, h5, h6, label, div[data-testid="stMetricLabel"] p, .stCaption p, div[data-testid="stMarkdownContainer"] p {
         color: #0f172a !important;
         font-weight: 700 !important;
         opacity: 1 !important;
     }
-
-    /* Sleek Modern Header Banner */
     .executive-header {
         background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 50%, #047857 100%);
         padding: 26px 36px;
@@ -60,15 +57,11 @@ st.markdown(
         font-weight: 500 !important;
         opacity: 1 !important;
     }
-
-    /* Metric Values (Large Numbers) */
     div[data-testid="stMetricValue"] {
         color: #0284c7 !important;
         font-weight: 800 !important;
         font-size: 2.2rem !important;
     }
-
-    /* Input Fields & Dropdowns */
     div[data-baseweb="input"], input {
         background-color: #ffffff !important;
         color: #0f172a !important;
@@ -80,8 +73,6 @@ st.markdown(
         border-color: #0284c7 !important;
         box-shadow: 0 0 0 1px #0284c7 !important;
     }
-
-    /* Tab Navigation Bar */
     button[data-baseweb="tab"] p {
         font-size: 1.05rem !important;
         font-weight: 700 !important;
@@ -93,8 +84,6 @@ st.markdown(
     button[aria-selected="true"][data-baseweb="tab"] {
         border-bottom-color: #047857 !important;
     }
-
-    /* Custom Strategic Cards (Alerts & Summaries) */
     .rec-card {
         background: #ffffff;
         border: 1px solid #e2e8f0;
@@ -111,12 +100,17 @@ st.markdown(
         border-left-color: #dc2626;
         color: #991b1b;
     }
+    .rec-card-chip {
+        background: #f0fdf4;
+        border-color: #86efac;
+        border-left-color: #16a34a;
+        color: #14532d;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# Header Banner Display
 st.markdown(
     """
     <div class="executive-header">
@@ -137,6 +131,54 @@ POSITION_MAP = {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
 ALL_CHIPS = ["WILDCARD", "FREEHIT", "BBOOST", "3XC"]
 
 
+@st.cache_data(ttl=3600)
+def fetch_fpl_setpiece_map():
+    url = "https://fantasy.premierleague.com/en/the-scout/set-piece-takers"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    setpiece_db = {}
+
+    if bs4 is None:
+        return setpiece_db
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = bs4.BeautifulSoup(response.text, "html.parser")
+            lines = [
+                line.strip()
+                for line in soup.get_text().split("\n")
+                if line.strip()
+            ]
+            current_duty = None
+
+            for line in lines:
+                if "Penalties" in line:
+                    current_duty = "pen"
+                elif "Direct free-kicks" in line:
+                    current_duty = "fk"
+                elif "Corners" in line:
+                    current_duty = "corner"
+                elif "Notes" in line or "Check back" in line:
+                    current_duty = None
+                elif current_duty:
+                    clean_line = re.sub(r"[^\w\s]", "", line).lower()
+                    words = [w for w in clean_line.split() if len(w) > 1]
+
+                    if words:
+                        surname = words[-1]
+                        if surname not in setpiece_db:
+                            setpiece_db[surname] = {
+                                "pen": 99,
+                                "fk": 99,
+                                "corner": 99,
+                            }
+                        setpiece_db[surname][current_duty] = 1
+    except Exception as e:
+        st.warning(f"Live set-piece fetch note: {e}")
+
+    return setpiece_db
+
+
 @st.cache_data(ttl=300)
 def fetch_fpl_data():
     url = "https://fantasy.premierleague.com/api/bootstrap-static/"
@@ -152,7 +194,6 @@ def fetch_fixtures_data():
 
 
 def fetch_league_data(league_id):
-    """Fetches ALL managers in a classic mini-league across all API pages."""
     all_results = []
     page = 1
     league_name = "Mini-League"
@@ -194,16 +235,18 @@ def get_next_gw_fixtures(fixtures, next_gw):
     for f in fixtures:
         if f.get("event") == next_gw:
             h_team, a_team = f["team_h"], f["team_a"]
-            next_fixtures[h_team] = {
-                "opp": a_team,
-                "fdr": f["team_h_difficulty"],
-                "is_home": True,
-            }
-            next_fixtures[a_team] = {
-                "opp": h_team,
-                "fdr": f["team_a_difficulty"],
-                "is_home": False,
-            }
+
+            if h_team not in next_fixtures:
+                next_fixtures[h_team] = []
+            if a_team not in next_fixtures:
+                next_fixtures[a_team] = []
+
+            next_fixtures[h_team].append(
+                {"opp": a_team, "fdr": f["team_h_difficulty"], "is_home": True}
+            )
+            next_fixtures[a_team].append(
+                {"opp": h_team, "fdr": f["team_a_difficulty"], "is_home": False}
+            )
     return next_fixtures
 
 
@@ -277,6 +320,7 @@ def fetch_manager_picks(entry_id, target_gw, player_dict):
             "Squad": [],
             "Cap_ID": None,
             "Starting": [],
+            "Bench": [],
             "GW_Pts": 0,
             "GW_Rank": "-",
         }
@@ -289,13 +333,15 @@ def fetch_manager_picks(entry_id, target_gw, player_dict):
     gw_rank = entry_hist.get("rank", "-")
 
     captain, vc, cap_id = "Unknown", "Unknown", None
-    squad_ids, starting_ids = [], []
+    squad_ids, starting_ids, bench_ids = [], [], []
 
     for pick in p_data.get("picks", []):
         pid = pick["element"]
         squad_ids.append(pid)
         if pick.get("position", 12) <= 11:
             starting_ids.append(pid)
+        else:
+            bench_ids.append(pid)
         if pick.get("is_captain"):
             captain = player_dict.get(pid, "Unknown")
             cap_id = pid
@@ -310,17 +356,20 @@ def fetch_manager_picks(entry_id, target_gw, player_dict):
         "Squad": squad_ids,
         "Cap_ID": cap_id,
         "Starting": starting_ids,
+        "Bench": bench_ids,
         "GW_Pts": gw_pts,
         "GW_Rank": gw_rank,
     }
 
 
-# Load Core Dataset
+# Load Core Datasets
 data = fetch_fpl_data()
 fixtures = fetch_fixtures_data()
+setpiece_db = fetch_fpl_setpiece_map()
 
 elements = data["elements"]
 teams = {t["id"]: t["name"] for t in data["teams"]}
+team_conceded_map = {t["id"]: t.get("strength_defence_home", 1200) for t in data["teams"]}
 events = data["events"]
 current_gw = get_current_gw(events)
 next_gw = current_gw + 1
@@ -328,6 +377,55 @@ next_gw = current_gw + 1
 next_fixtures_map = get_next_gw_fixtures(fixtures, next_gw)
 player_dict = {p["id"]: p["web_name"] for p in elements}
 player_obj_dict = {p["id"]: p for p in elements}
+
+
+# ------------------------------------------------------------------------------
+# CORE XP ROUTER WITH POSITIONAL DEFENSE & DEFCON MULTIPLIERS
+# ------------------------------------------------------------------------------
+def compute_player_xp(p_obj):
+    """
+    Computes positionally aware baseline xP proxy factoring in DefCon for DEF/GKP.
+    """
+    pos_type = p_obj.get("element_type", 3)
+    form_val = float(p_obj.get("form", 0.0))
+    xg_val = float(p_obj.get("expected_goals", 0.0))
+    xa_val = float(p_obj.get("expected_assists", 0.0))
+    xgi_val = xg_val + xa_val
+
+    t_id = p_obj.get("team")
+    f_list = next_fixtures_map.get(t_id, [])
+    fdr = f_list[0]["fdr"] if f_list else 3
+
+    # Position 1 (GKP) & Position 2 (DEF): Defensive Multipliers + DefCon
+    if pos_type in [1, 2]:
+        fdr_cs_map = {1: 0.50, 2: 0.40, 3: 0.25, 4: 0.15, 5: 0.05}
+        base_cs_prob = fdr_cs_map.get(fdr, 0.25)
+
+        # DefCon Solidity Multiplier: Higher defensive strength rating boosts CS odds
+        def_strength = team_conceded_map.get(t_id, 1100)
+        if def_strength >= 1250:
+            defcon_mult = 1.25  # Elite Defense
+        elif def_strength >= 1050:
+            defcon_mult = 1.00  # Average Defense
+        else:
+            defcon_mult = 0.75  # Leaky Defense
+
+        cs_xp = (base_cs_prob * 4.0) * defcon_mult
+
+        if pos_type == 1:
+            saves_val = float(p_obj.get("saves", 0))
+            mins_val = float(p_obj.get("minutes", 1))
+            saves_per_90 = (saves_val / max(1.0, mins_val)) * 90.0
+            save_xp = min(2.0, saves_per_90 * 0.33)
+            return round(cs_xp + save_xp + 2.0 + (form_val * 0.05), 2)
+        else:
+            attacking_xp = xgi_val * 0.60
+            return round(cs_xp + attacking_xp + 2.0 + (form_val * 0.05), 2)
+
+    # Position 3 (MID) & Position 4 (FWD): Attacking xGI Proxy
+    else:
+        return round((form_val * 0.10) + (xgi_val * 0.75) + 2.0, 2)
+
 
 tab1, tab2, tab3 = st.tabs(
     ["📊 Market & Price Dynamics", "🕵️ Mini-League Spy", "🤖 AI Squad Advisor"]
@@ -411,7 +509,9 @@ with tab1:
                 "Pos": POSITION_MAP.get(p["element_type"], "UNK"),
                 "Cost (£m)": p["now_cost"] / 10,
                 "GW Change Raw": gw_change,
-                "GW Change": f"+£{gw_change:.1f}m" if gw_change > 0 else (f"-£{abs(gw_change):.1f}m" if gw_change < 0 else "£0.0m"),
+                "GW Change": f"+£{gw_change:.1f}m"
+                if gw_change > 0
+                else (f"-£{abs(gw_change):.1f}m" if gw_change < 0 else "£0.0m"),
                 "Net Transfers": net,
                 "Est. Price Change": status,
             }
@@ -435,8 +535,6 @@ with tab1:
         "Net Transfers",
         "Est. Price Change",
     ]
-    df_risers = df_risers[column_order]
-    df_fallers = df_fallers[column_order]
 
     c1, c2 = st.columns(2)
     table_h = min((top_n + 1) * 35 + 5, 800)
@@ -444,7 +542,7 @@ with tab1:
     with c1:
         st.markdown("### 📈 Rising Assets (Buy Pressure)")
         st.dataframe(
-            df_risers,
+            df_risers[column_order],
             use_container_width=True,
             hide_index=True,
             height=table_h,
@@ -456,7 +554,7 @@ with tab1:
     with c2:
         st.markdown("### 📉 Falling Assets (Sell Pressure)")
         st.dataframe(
-            df_fallers,
+            df_fallers[column_order],
             use_container_width=True,
             hide_index=True,
             height=table_h,
@@ -534,7 +632,9 @@ with tab2:
                     for idx, item in enumerate(sorted_by_prev)
                 }
 
-                leader_pts = manager_data[0]["mgr"]["total"] if manager_data else 0
+                leader_pts = (
+                    manager_data[0]["mgr"]["total"] if manager_data else 0
+                )
                 rivals = []
 
                 for idx, item in enumerate(manager_data):
@@ -562,7 +662,9 @@ with tab2:
                             trend = "⚪ ="
 
                     pts_off_lead = mgr["total"] - leader_pts
-                    pts_str = "Leader" if pts_off_lead == 0 else f"{pts_off_lead} pts"
+                    pts_str = (
+                        "Leader" if pts_off_lead == 0 else f"{pts_off_lead} pts"
+                    )
 
                     rivals.append(
                         {
@@ -593,7 +695,7 @@ with tab2:
 
                 st.markdown("---")
 
-                # Shield & Sword Matrix
+                # Tactical Matrix
                 st.markdown("### ⚔️ Target Window Tactical Matrix")
 
                 my_rank_idx = next(
@@ -656,7 +758,9 @@ with tab2:
                         shield_sword_data.append(
                             {
                                 "Player": player_dict.get(pid, "Unknown"),
-                                "Owned by You": "✅ Yes" if is_owned else "❌ No",
+                                "Owned by You": "✅ Yes"
+                                if is_owned
+                                else "❌ No",
                                 "Target Group Starting %": f"{start_pct:.1f}%",
                                 "Target Group Cap %": f"{cap_pct:.1f}%",
                                 "Target Group EO %": round(eo_val, 1),
@@ -665,11 +769,9 @@ with tab2:
                         )
 
                         p_obj = player_obj_dict.get(pid, {})
+                        xp_val = compute_player_xp(p_obj)
                         form_val = float(p_obj.get("form", 0.0))
-                        xg_val = float(p_obj.get("expected_goals", 0.0))
-                        xa_val = float(p_obj.get("expected_assists", 0.0))
-                        xgi_val = xg_val + xa_val
-                        xp_val = round((form_val * 0.5) + (xgi_val * 0.5), 2)
+                        xgi_val = float(p_obj.get("expected_goals", 0.0)) + float(p_obj.get("expected_assists", 0.0))
 
                         if eo_val >= 50.0 and xp_val >= 4.0 and not is_owned:
                             impact_role = "🚨 High-Priority Threat"
@@ -759,7 +861,7 @@ with tab2:
                         "#### 🔥 Table 2: High-Impact Threat Matrix (Weighted by Form & xP)"
                     )
                     st.caption(
-                        "Combines target rival ownership with Form & Expected Metrics ($xGI$) to isolate actual high-priority threats from low-scoring dead weight."
+                        "Combines target rival ownership with Form & Positional Expected Metrics to isolate actual high-priority threats."
                     )
 
                     df_weighted = pd.DataFrame(weighted_data)
@@ -803,7 +905,7 @@ with tab2:
                 st.error("Invalid League ID.")
 
 # ------------------------------------------------------------------------------
-# TAB 3: AI SQUAD ADVISOR (WITH GKP SUPPORT & CROSS-TAB MARKET MOMENTUM)
+# TAB 3: AI SQUAD ADVISOR
 # ------------------------------------------------------------------------------
 with tab3:
     st.markdown("### 🤖 AI Squad Optimizer & Executive Transfer Advisor")
@@ -821,7 +923,9 @@ with tab3:
         )
 
     if user_team_id:
-        with st.spinner("Executing optimization algorithms and xP analysis..."):
+        with st.spinner(
+            "Executing optimization algorithms and xP analysis..."
+        ):
             my_history = calculate_saved_fts_and_history(
                 user_team_id, current_gw
             )
@@ -847,7 +951,7 @@ with tab3:
                             (count / total_mgrs) * 100, 1
                         )
 
-            # --- SQUAD OVERVIEW METRICS ---
+            # Squad Overview Metrics
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("💼 Bank Remaining", f"£{my_picks['Bank']:.1f}m")
             m2.metric("🔄 Saved Transfers", f"{my_history['Saved FTs']} FT")
@@ -856,18 +960,17 @@ with tab3:
 
             st.markdown("---")
 
-            # ------------------------------------------------------------------
-            # 🔥 MARKET HOTSPOTS: LINKED WITH TAB 1 MARKET DATA
-            # ------------------------------------------------------------------
+            # Market Hotspots
             st.markdown("### 🔥 Market Hotspots (Best Buy Targets)")
             st.caption(
                 "High Expected Points (xP) assets cross-referenced with Tab 1 real-time market price momentum."
             )
 
-            # Controls: Toggle to hide/show owned players & Display Slider
             col_ctrl1, col_ctrl2 = st.columns([1, 2])
             with col_ctrl1:
-                hide_owned = st.toggle("👁️ Hide Owned Players", value=True, key="hs_hide_owned")
+                hide_owned = st.toggle(
+                    "👁️ Hide Owned Players", value=True, key="hs_hide_owned"
+                )
             with col_ctrl2:
                 num_rows = st.slider(
                     "🎚️ Display Row Limit (per position):",
@@ -877,25 +980,24 @@ with tab3:
                     key="hs_rows",
                 )
 
-            # Build player set conditionally based on toggle state
             my_squad_ids = set(my_picks["Squad"]) if hide_owned else set()
 
-            # Build comprehensive player pool linked with Tab 1 data
             market_hotspots = []
             for p in elements:
                 if p["id"] in my_squad_ids:
                     continue
 
-                form_val = float(p.get("form", 0.0))
-                xg_val = float(p.get("expected_goals", 0.0))
-                xa_val = float(p.get("expected_assists", 0.0))
-                xgi_val = xg_val + xa_val
-                xp_proxy = round((form_val * 0.5) + (xgi_val * 0.5), 2)
+                xp_proxy = compute_player_xp(p)
 
-                f_info = next_fixtures_map.get(p["team"], {})
-                opp_name = teams.get(f_info.get("opp"), "UNK") if f_info else "N/A"
-                loc = "(H)" if f_info.get("is_home") else "(A)"
-                vs_str = f"{opp_name} {loc}"
+                f_list = next_fixtures_map.get(p["team"], [])
+                if f_list:
+                    vs_strings = [
+                        f"{teams.get(f['opp'], 'UNK')} {'(H)' if f['is_home'] else '(A)'}"
+                        for f in f_list
+                    ]
+                    vs_str = " + ".join(vs_strings)
+                else:
+                    vs_str = "BLANK"
 
                 net = p["transfers_in_event"] - p["transfers_out_event"]
                 gw_change = p.get("cost_change_event", 0) / 10
@@ -914,6 +1016,8 @@ with tab3:
                     {
                         "ID": p["id"],
                         "Name": p["web_name"],
+                        "Team_ID": p["team"],
+                        "Team": teams.get(p["team"], "UNK"),
                         "Pos_ID": p["element_type"],
                         "Pos": POSITION_MAP.get(p["element_type"], "UNK"),
                         "Price": f"£{p['now_cost'] / 10:.1f}m",
@@ -927,7 +1031,6 @@ with tab3:
 
             df_hotspots = pd.DataFrame(market_hotspots)
 
-            # 4 Columns Grid (GKP, DEF, MID, FWD)
             col_gkp, col_def, col_mid, col_fwd = st.columns(4)
 
             pos_cols = [
@@ -945,7 +1048,8 @@ with tab3:
                     sub_df = (
                         df_hotspots[df_hotspots["Pos_ID"] == pos_code]
                         .sort_values(
-                            by=["xP", "Net_Transfers"], ascending=[False, False]
+                            by=["xP", "Net_Transfers"],
+                            ascending=[False, False],
                         )
                         .head(num_rows)[display_fields]
                     )
@@ -963,9 +1067,7 @@ with tab3:
 
             st.markdown("---")
 
-            # ------------------------------------------------------------------
-            # CURRENT SQUAD METRICS TABLE & RECOMMENDATIONS
-            # ------------------------------------------------------------------
+            # Current Squad Table
             squad_objs = [
                 player_obj_dict[pid]
                 for pid in my_picks["Squad"]
@@ -982,12 +1084,7 @@ with tab3:
                 )
 
                 def compute_xp_and_price_risk(row):
-                    form_val = float(row.get("form", 0.0))
-                    xg_val = float(row.get("expected_goals", 0.0))
-                    xa_val = float(row.get("expected_assists", 0.0))
-                    xgi_val = xg_val + xa_val
-                    xp_proxy = round((form_val * 0.5) + (xgi_val * 0.5), 2)
-
+                    xp_proxy = compute_player_xp(row.to_dict())
                     net_transfers = row["Net_Transfers"]
                     if net_transfers <= -50000:
                         price_risk = "🚨 Heavy Drop Risk"
@@ -999,7 +1096,8 @@ with tab3:
                         price_risk = "⚪ Stable"
 
                     return pd.Series(
-                        [xp_proxy, price_risk], index=["xP_Proxy", "Price_Risk"]
+                        [xp_proxy, price_risk],
+                        index=["xP_Proxy", "Price_Risk"],
                     )
 
                 df_squad[["xP_Proxy", "Price_Risk"]] = df_squad.apply(
@@ -1008,12 +1106,17 @@ with tab3:
 
                 def get_fixture_info(row):
                     t_id = row["team"]
-                    f_info = next_fixtures_map.get(t_id, {})
-                    if not f_info:
-                        return "N/A", "N/A", 3
-                    opp_name = teams.get(f_info["opp"], "UNK")
-                    loc = "(H)" if f_info["is_home"] else "(A)"
-                    return f"{opp_name} {loc}", f_info["fdr"], f_info["fdr"]
+                    f_list = next_fixtures_map.get(t_id, [])
+                    if not f_list:
+                        return "BLANK", 5
+                    vs_str = " + ".join(
+                        [
+                            f"{teams.get(f['opp'], 'UNK')} {'(H)' if f['is_home'] else '(A)'}"
+                            for f in f_list
+                        ]
+                    )
+                    avg_fdr = sum(f["fdr"] for f in f_list) / len(f_list)
+                    return vs_str, avg_fdr
 
                 fixture_data = df_squad.apply(get_fixture_info, axis=1)
                 df_squad["Next_Fixture"] = [f[0] for f in fixture_data]
@@ -1023,7 +1126,9 @@ with tab3:
                 )
 
                 # Price Risk Alert Banner
-                high_risk_players = df_squad[df_squad["Net_Transfers"] <= -50000]
+                high_risk_players = df_squad[
+                    df_squad["Net_Transfers"] <= -50000
+                ]
                 if not high_risk_players.empty:
                     for _, hr_p in high_risk_players.iterrows():
                         st.markdown(
@@ -1037,7 +1142,6 @@ with tab3:
                             unsafe_allow_html=True,
                         )
 
-                # Current Squad Table
                 st.markdown("#### 📋 Current Squad Analytical Breakdown")
                 display_cols = [
                     "web_name",
@@ -1070,60 +1174,470 @@ with tab3:
                 )
 
                 st.dataframe(
-                    df_squad_display.sort_values(by="Est. xP", ascending=False),
+                    df_squad_display.sort_values(
+                        by="Est. xP", ascending=False
+                    ),
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "Cost (£m)": st.column_config.NumberColumn(format="£%.1fm"),
-                        "Form": st.column_config.NumberColumn(format="%.1f pts"),
-                        "Est. xP": st.column_config.NumberColumn(format="%.2f pts"),
-                        "FDR": st.column_config.NumberColumn(format="Difficulty: %d"),
+                        "Cost (£m)": st.column_config.NumberColumn(
+                            format="£%.1fm"
+                        ),
+                        "Form": st.column_config.NumberColumn(
+                            format="%.1f pts"
+                        ),
+                        "Est. xP": st.column_config.NumberColumn(
+                            format="%.2f pts"
+                        ),
+                        "FDR": st.column_config.NumberColumn(
+                            format="Difficulty: %.1f"
+                        ),
                     },
                 )
 
+                # --------------------------------------------------------------
+                # 👑 CAPTAINCY ENGINE & INTUITION LOGIC
+                # --------------------------------------------------------------
                 st.markdown("---")
+                st.markdown("### 👑 AI Captaincy Advice & Manager's Eye Engine")
 
-                # Strategic Recommendations
-                st.markdown("#### 💡 Strategic Transfer Recommendations")
-                sell_candidates = df_squad[
-                    (df_squad["Form_Float"] < 3.0)
-                    | (df_squad["Net_Transfers"] < -30000)
-                ]
+                col_opt1, col_opt2 = st.columns([1, 2])
+                with col_opt1:
+                    enable_intuition = st.toggle(
+                        "🧠 Enable 'Manager's Eye' Intuition Logic", value=True
+                    )
+                with col_opt2:
+                    st.caption(
+                        "Overrules short-term form spikes with set-piece dominance, home track records, DGW multipliers, and target fixtures."
+                    )
 
-                if not sell_candidates.empty:
-                    for _, sell_p in sell_candidates.iterrows():
-                        pos_id = sell_p["element_type"]
-                        max_budget = sell_p["Cost_m"] + my_picks["Bank"]
+                def calculate_captain_score(row):
+                    form_val = float(row.get("form", 0.0))
+                    xg_val = float(row.get("expected_goals", 0.0))
+                    xa_val = float(row.get("expected_assists", 0.0))
+                    xgi_val = xg_val + xa_val
+                    cost_m = float(row.get("now_cost", 0)) / 10.0
 
-                        replacements = [
-                            p
-                            for p in market_hotspots
-                            if p["Pos_ID"] == pos_id
-                            and p["Cost_Raw"] <= max_budget
-                        ]
-                        replacements = sorted(
-                            replacements, key=lambda x: x["xP"], reverse=True
+                    player_name = str(row.get("web_name", "")).lower()
+                    clean_pname = re.sub(r"[^\w\s]", "", player_name)
+
+                    # Set-Piece Lookup
+                    has_setpiece_duty = False
+                    for surname, role_ranks in setpiece_db.items():
+                        if surname in clean_pname or clean_pname in surname:
+                            if role_ranks.get("pen") in [1, 2] or role_ranks.get("fk") in [1, 2]:
+                                has_setpiece_duty = True
+                                break
+
+                    KEY_SET_PIECE_PLAYERS = [
+                        "fernandes", "bruno", "saka", "palmer", "haaland", "salah"
+                    ]
+                    if any(k in clean_pname for k in KEY_SET_PIECE_PLAYERS):
+                        has_setpiece_duty = True
+
+                    quality_floor = max(0.0, (cost_m - 5.0) * 0.35)
+                    set_piece_bonus = 0.80 if has_setpiece_duty else 0.0
+
+                    base_xp = (form_val * 0.10) + (xgi_val * 0.75) + quality_floor + set_piece_bonus
+
+                    t_id = row["team"]
+                    f_list = next_fixtures_map.get(t_id, [])
+
+                    if not f_list:
+                        return pd.Series(
+                            [0.0, 0.0, "Blank Gameweek"],
+                            index=["AI_Score", "Intuition_Score", "Drivers"],
                         )
 
-                        if replacements:
-                            top_target = replacements[0]
-                            st.markdown(
-                                f"""
-                                <div class="rec-card">
-                                    <strong>🔄 Suggested Transfer Call:</strong><br/>
-                                    <strong>OUT:</strong> {sell_p['web_name']} ({POSITION_MAP.get(pos_id)}) — Form: <code>{sell_p['Form_Float']}</code> | Price: <code>£{sell_p['Cost_m']:.1f}m</code><br/>
-                                    <strong>IN:</strong> {top_target['Name']} ({top_target['Pos']}) — Est. xP: <code>{top_target['xP']}</code> | Market Status: <code>{top_target['Status']}</code> | Price: <code>{top_target['Price']}</code>
-                                </div>
-                                """,
-                                unsafe_allow_html=True,
-                            )
+                    is_dgw = len(f_list) > 1
+                    fdr_weights = {1: 1.35, 2: 1.18, 3: 1.00, 4: 0.82, 5: 0.65}
+
+                    total_fixture_mult = 0
+                    has_home_game = False
+                    has_target_fixture = False
+
+                    for f in f_list:
+                        fdr = f["fdr"]
+                        f_mult = fdr_weights.get(fdr, 1.00)
+                        if f["is_home"]:
+                            f_mult *= 1.10
+                            has_home_game = True
+                        else:
+                            f_mult *= 0.95
+
+                        if fdr <= 2:
+                            has_target_fixture = True
+
+                        total_fixture_mult += f_mult
+
+                    ai_score = round(base_xp * total_fixture_mult, 2)
+
+                    intuition_boost = 1.00
+                    driver_list = []
+
+                    if enable_intuition:
+                        if is_dgw:
+                            intuition_boost *= 1.40
+                            driver_list.append("Double Gameweek (DGW)")
+
+                        if has_target_fixture and has_home_game and has_setpiece_duty:
+                            intuition_boost *= 1.35
+                            driver_list.append("Home Target Fixture + Set-Piece Duty")
+                        elif has_target_fixture and has_setpiece_duty:
+                            intuition_boost *= 1.25
+                            driver_list.append("Target Fixture + Set-Piece Duty")
+                        elif has_target_fixture and has_home_game:
+                            intuition_boost *= 1.15
+                            driver_list.append("Home Target Fixture")
+                        elif has_setpiece_duty:
+                            intuition_boost *= 1.10
+                            driver_list.append("Set-Piece Duty")
+
+                    human_score = round(ai_score * intuition_boost, 2)
+                    driver_str = (
+                        " + ".join(driver_list)
+                        if driver_list
+                        else "Form / Base Matchup"
+                    )
+
+                    return pd.Series(
+                        [ai_score, human_score, driver_str],
+                        index=["AI_Score", "Intuition_Score", "Drivers"],
+                    )
+
+                df_squad[
+                    ["AI_Score", "Intuition_Score", "Drivers"]
+                ] = df_squad.apply(calculate_captain_score, axis=1)
+
+                df_ai_caps = df_squad.sort_values(
+                    by="AI_Score", ascending=False
+                ).reset_index(drop=True)
+                df_intuition_caps = df_squad.sort_values(
+                    by="Intuition_Score", ascending=False
+                ).reset_index(drop=True)
+
+                top_ai_cap = df_ai_caps.iloc[0]
+                top_ai_vc = (
+                    df_ai_caps.iloc[1] if len(df_ai_caps) > 1 else top_ai_cap
+                )
+                top_human_cap = df_intuition_caps.iloc[0]
+
+                if enable_intuition:
+                    c_card1, c_card2, c_card3 = st.columns(3)
                 else:
+                    c_card1, c_card2 = st.columns(2)
+
+                with c_card1:
                     st.markdown(
-                        """
-                        <div class="rec-card">
-                            <strong>✅ Squad Stable:</strong> No immediate high-priority forced transfers detected. 
-                            Consider rolling your Free Transfer for maximum flexibility next Gameweek.
+                        f"""
+                        <div class="rec-card" style="border-left-color: #eab308; background-color: #fefce8;">
+                            <h4 style="margin:0; color:#854d0e;">🤖 Pure AI Model Pick (C)</h4>
+                            <h2 style="margin: 8px 0; color:#a16207;">{top_ai_cap['web_name']}</h2>
+                            <p style="margin:0;">
+                                <strong>Opponent:</strong> {top_ai_cap['Next_Fixture']} (FDR: {top_ai_cap['FDR']})<br/>
+                                <strong>Form:</strong> {top_ai_cap['Form_Float']} | <strong>xGI:</strong> {float(top_ai_cap.get('expected_goals', 0))+float(top_ai_cap.get('expected_assists', 0)):.2f}<br/>
+                                <strong>Model Score:</strong> <code>{top_ai_cap['AI_Score']} pts</code>
+                            </p>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
+
+                with c_card2:
+                    st.markdown(
+                        f"""
+                        <div class="rec-card" style="border-left-color: #64748b; background-color: #f8fafc;">
+                            <h4 style="margin:0; color:#334155;">🛡️ AI Vice-Captain (VC)</h4>
+                            <h2 style="margin: 8px 0; color:#475569;">{top_ai_vc['web_name']}</h2>
+                            <p style="margin:0;">
+                                <strong>Opponent:</strong> {top_ai_vc['Next_Fixture']} (FDR: {top_ai_vc['FDR']})<br/>
+                                <strong>Form:</strong> {top_ai_vc['Form_Float']} | <strong>xGI:</strong> {float(top_ai_vc.get('expected_goals', 0))+float(top_ai_vc.get('expected_assists', 0)):.2f}<br/>
+                                <strong>Model Score:</strong> <code>{top_ai_vc['AI_Score']} pts</code>
+                            </p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                if enable_intuition:
+                    with c_card3:
+                        st.markdown(
+                            f"""
+                            <div class="rec-card" style="border-left-color: #7c3aed; background-color: #f5f3ff;">
+                                <h4 style="margin:0; color:#5b21b6;">🧠 Manager's Eye Pick (C)</h4>
+                                <h2 style="margin: 8px 0; color:#6d28d9;">{top_human_cap['web_name']}</h2>
+                                <p style="margin:0;">
+                                    <strong>Opponent:</strong> {top_human_cap['Next_Fixture']} (FDR: {top_human_cap['FDR']})<br/>
+                                    <strong>Intuition Drivers:</strong> {top_human_cap['Drivers']}<br/>
+                                    <strong>Weighted Score:</strong> <code>{top_human_cap['Intuition_Score']} pts</code>
+                                </p>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+                # --------------------------------------------------------------
+                # AUTOMATED CHIP TRIGGER RADAR & DRAFT GENERATOR
+                # --------------------------------------------------------------
+                st.markdown("---")
+                st.markdown("### ⚡ Automated Chip Trigger Radar")
+
+                chips_remaining = my_history.get("Chips Remaining", [])
+
+                tc_triggered = (
+                    top_human_cap["Intuition_Score"] >= 8.5
+                    and "3XC" in chips_remaining
+                )
+
+                bench_xp_sum = sum(
+                    compute_player_xp(player_obj_dict[pid])
+                    for pid in my_picks.get("Bench", [])
+                    if pid in player_obj_dict
+                )
+                bb_triggered = (
+                    bench_xp_sum >= 12.0 and "BBOOST" in chips_remaining
+                )
+
+                blank_starters_count = sum(
+                    1
+                    for pid in my_picks.get("Starting", [])
+                    if pid in player_obj_dict
+                    and not next_fixtures_map.get(
+                        player_obj_dict[pid]["team"], []
+                    )
+                )
+                fh_triggered = (
+                    blank_starters_count >= 3 and "FREEHIT" in chips_remaining
+                )
+
+                if tc_triggered:
+                    st.markdown(
+                        f"""
+                        <div class="rec-card rec-card-chip">
+                            🚀 <strong>TRIPLE CAPTAIN CHIP RECOMMENDATION:</strong><br/>
+                            <strong>{top_human_cap['web_name']}</strong> has reached an elite Manager's Eye Score of 
+                            <code>{top_human_cap['Intuition_Score']} pts</code> ({top_human_cap['Drivers']}). 
+                            Consider activating your <strong>Triple Captain (3XC)</strong> chip.
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                if bb_triggered:
+                    st.markdown(
+                        f"""
+                        <div class="rec-card rec-card-chip">
+                            🧱 <strong>BENCH BOOST CHIP RECOMMENDATION:</strong><br/>
+                            Your substitute bench has a high total baseline projection of 
+                            <code>{bench_xp_sum:.2f} xP</code>. Consider activating your 
+                            <strong>Bench Boost (BBOOST)</strong> chip.
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                if fh_triggered:
+                    st.markdown(
+                        f"""
+                        <div class="rec-card rec-card-danger">
+                            🚨 <strong>FREE HIT CHIP RECOMMENDATION:</strong><br/>
+                            You currently have <strong>{blank_starters_count} starting players</strong> facing a Blank Gameweek. 
+                            Consider deploying your <strong>Free Hit (FREEHIT)</strong> chip.
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                if not (tc_triggered or bb_triggered or fh_triggered):
+                    st.caption(
+                        "⚪ No strict automatic chip triggers hit for this Gameweek."
+                    )
+
+                # Manual Trigger Toggle for YOLO Wildcard / Free Hit Mode
+                col_chip_t1, col_chip_t2 = st.columns([1, 2])
+                with col_chip_t1:
+                    enable_yolo_chip = st.toggle(
+                        "🃏 Enable YOLO Wildcard / Free Hit Draft Mode",
+                        value=False,
+                        key="toggle_yolo_chip",
+                    )
+                with col_chip_t2:
+                    st.caption(
+                        "Constructs the optimal 15-player squad strictly adhering to current prices, budget limits, and max 3 players per club."
+                    )
+
+                if enable_yolo_chip:
+                    st.markdown(
+                        """
+                        <div class="rec-card rec-card-chip" style="background-color: #f0fdf4; border-left-color: #16a34a;">
+                            🃏 <strong>OPTIMAL WILDCARD / FREE HIT DRAFT: Existing + Target Market</strong><br/>
+                            Evaluates your current squad alongside market targets. High-performing assets are retained, while underperforming assets are replaced to maximize total 15-man xP under budget.
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    # Total Available Squad Budget Calculation
+                    squad_value = (
+                        sum(p["Cost_m"] for _, p in df_squad.iterrows())
+                        if not df_squad.empty
+                        else 100.0
+                    )
+                    total_budget = squad_value + my_picks.get("Bank", 0.0)
+
+                    # Build full player pool combining current squad + market elements
+                    full_player_pool = []
+
+                    # Add current squad
+                    for _, p_squad in df_squad.iterrows():
+                        full_player_pool.append({
+                            "ID": p_squad["id"],
+                            "Name": p_squad["web_name"],
+                            "Team_ID": p_squad["team"],
+                            "Team": teams.get(p_squad["team"], "UNK"),
+                            "Pos_ID": p_squad["element_type"],
+                            "Pos": POSITION_MAP.get(p_squad["element_type"], "UNK"),
+                            "Price": f"£{p_squad['Cost_m']:.1f}m",
+                            "Cost_Raw": p_squad["Cost_m"],
+                            "Status": "🛡️ Retained (Owned)",
+                            "Vs": p_squad["Next_Fixture"],
+                            "xP": p_squad["xP_Proxy"],
+                            "Is_Owned": True
+                        })
+
+                    # Add market targets
+                    for p_mkt in market_hotspots:
+                        if p_mkt["ID"] not in set(df_squad["id"]):
+                            p_mkt_entry = dict(p_mkt)
+                            p_mkt_entry["Is_Owned"] = False
+                            p_mkt_entry["Status"] = "🆕 Market Buy"
+                            full_player_pool.append(p_mkt_entry)
+
+                    # Sort pooled assets by expected points
+                    df_pool = pd.DataFrame(full_player_pool).sort_values(by="xP", ascending=False)
+
+                    # Draft Selection Logic
+                    yolo_squad = []
+                    team_counts = {}
+                    pos_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+                    pos_limits = {1: 2, 2: 5, 3: 5, 4: 3}
+                    spent_budget = 0.0
+
+                    for _, player in df_pool.iterrows():
+                        pos_id = player["Pos_ID"]
+                        team_id = player["Team_ID"]
+                        cost = player["Cost_Raw"]
+
+                        if (
+                            pos_counts[pos_id] < pos_limits[pos_id]
+                            and team_counts.get(team_id, 0) < 3
+                            and (spent_budget + cost) <= total_budget
+                        ):
+                            yolo_squad.append(player)
+                            pos_counts[pos_id] += 1
+                            team_counts[team_id] = team_counts.get(team_id, 0) + 1
+                            spent_budget += cost
+
+                        if len(yolo_squad) == 15:
+                            break
+
+                    df_yolo_squad = pd.DataFrame(yolo_squad)
+
+                    if not df_yolo_squad.empty:
+                        total_draft_cost = df_yolo_squad["Cost_Raw"].sum()
+                        total_draft_xp = df_yolo_squad["xP"].sum()
+                        retained_count = sum(1 for p in yolo_squad if p["Is_Owned"])
+                        new_transfers_count = 15 - retained_count
+                        remaining_bank = total_budget - total_draft_cost
+
+                        c_d1, c_d2, c_d3, c_d4 = st.columns(4)
+                        c_d1.metric("💰 Draft Squad Cost", f"£{total_draft_cost:.1f}m", f"Cap: £{total_budget:.1f}m")
+                        c_d2.metric("💵 Remaining Bank", f"£{remaining_bank:.1f}m")
+                        c_d3.metric("🔁 Transfers Made", f"{new_transfers_count} IN / {new_transfers_count} OUT", f"{retained_count} Retained")
+                        c_d4.metric("⚡ Total Draft xP", f"{total_draft_xp:.2f} pts")
+
+                        st.dataframe(
+                            df_yolo_squad[["Name", "Pos", "Price", "Vs", "xP", "Status"]],
+                            use_container_width=True,
+                            hide_index=True,
+                            height=((len(df_yolo_squad) + 1) * 35 + 5),
+                            column_config={
+                                "xP": st.column_config.NumberColumn(format="%.2f pts")
+                            },
+                        )
+                    else:
+                        st.warning("Unable to assemble a valid 15-player squad within the selected budget.")
+
+                # --------------------------------------------------------------
+                # STRATEGIC TRANSFER THRESHOLDS (GUARANTEED 4-POSITIONAL CARDS)
+                # --------------------------------------------------------------
+                st.markdown("---")
+                st.markdown("### 💡 Strategic Transfer Recommendations")
+                st.caption(
+                    "Displays the top tactical swap for each position (GKP, DEF, MID, FWD) matching price gain and market momentum."
+                )
+
+                available_fts = my_history.get("Saved FTs", 1)
+                xp_threshold = 2.5 if available_fts >= 1 else 4.5
+                transfer_type = "Free Transfer" if available_fts >= 1 else "-4 Hit"
+
+                for pos_code in [1, 2, 3, 4]:
+                    pos_name = POSITION_MAP.get(pos_code)
+                    
+                    if not df_squad.empty:
+                        pos_squad_players = df_squad[df_squad["element_type"] == pos_code]
+                    else:
+                        pos_squad_players = pd.DataFrame()
+
+                    best_pos_call = None
+                    max_pos_gain = -999.0
+
+                    if not pos_squad_players.empty:
+                        for _, sell_p in pos_squad_players.iterrows():
+                            current_xp = sell_p["xP_Proxy"]
+                            max_budget = sell_p["Cost_m"] + my_picks.get("Bank", 0.0)
+
+                            replacements = [
+                                p
+                                for p in market_hotspots
+                                if p["Pos_ID"] == pos_code
+                                and p["Cost_Raw"] <= max_budget
+                                and p["ID"] != sell_p["id"]
+                            ]
+
+                            for target in replacements:
+                                gain = target["xP"] - current_xp
+                                if gain > max_pos_gain:
+                                    max_pos_gain = gain
+                                    best_pos_call = (sell_p, target, gain)
+
+                    if best_pos_call:
+                        sell_p, top_target, xp_gain = best_pos_call
+                        meets_thresh = xp_gain >= xp_threshold
+                        tag_color = "#059669" if meets_thresh else "#64748b"
+                        status_msg = (
+                            f"(Exceeds {xp_threshold} pts threshold)"
+                            if meets_thresh
+                            else "(Optional Upgrade)"
+                        )
+
+                        st.markdown(
+                            f"""
+                            <div class="rec-card" style="border-left-color: {tag_color};">
+                                🔄 <strong>Suggested Transfer Call ({transfer_type} — {pos_name}):</strong><br/>
+                                <strong>OUT:</strong> {sell_p['web_name']} ({pos_name}) — Form: <code>{sell_p['Form_Float']}</code> | Price: <code>£{sell_p['Cost_m']:.1f}m</code> | Est. xP: <code>{sell_p['xP_Proxy']:.2f} pts</code><br/>
+                                <strong>IN:</strong> {top_target['Name']} ({top_target['Pos']}) — Est. xP: <code>{top_target['xP']:.2f} pts</code> | Market Status: <code>{top_target['Status']}</code> | Price: <code>{top_target['Price']}</code><br/>
+                                <strong>Projected Net Advantage:</strong> <code>+{xp_gain:.2f} pts gain</code> {status_msg}
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            f"""
+                            <div class="rec-card" style="border-left-color: #cbd5e1;">
+                                ⚪ <strong>No Transfer Needed ({pos_name}):</strong> Your current {pos_name} assets are already fully optimized for budget & xP.
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
