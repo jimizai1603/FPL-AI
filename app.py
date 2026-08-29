@@ -21,7 +21,7 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------------------
-# UNIVERSAL LIGHT THEME UI/UX ENGINE
+# UNIVERSAL LIGHT THEME UI/UX ENGINE & TRANSFER BADGE STYLES
 # ------------------------------------------------------------------------------
 st.markdown(
     """
@@ -105,6 +105,26 @@ st.markdown(
         border-color: #86efac;
         border-left-color: #16a34a;
         color: #14532d;
+    }
+    .badge-in {
+        background-color: #dcfce7;
+        color: #166534;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.88rem;
+        display: inline-block;
+        margin: 2px 0;
+    }
+    .badge-out {
+        background-color: #fee2e2;
+        color: #991b1b;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.88rem;
+        display: inline-block;
+        margin: 2px 0;
     }
     </style>
     """,
@@ -251,30 +271,27 @@ def get_next_gw_fixtures(fixtures, next_gw):
 
 
 def calculate_saved_fts_and_history(entry_id, target_gw):
-    hist_url = (
-        f"https://fantasy.premierleague.com/api/entry/{entry_id}/history/"
-    )
-    res = requests.get(hist_url)
-    if res.status_code != 200:
+    hist_url = f"https://fantasy.premierleague.com/api/entry/{entry_id}/history/"
+    res_hist = requests.get(hist_url)
+
+    if res_hist.status_code != 200:
         return {
-            "Chips Used": "None",
+            "Chips Used": "-",
             "Chips Remaining": ", ".join(ALL_CHIPS),
             "Hits Cost": 0,
             "Saved FTs": 1,
         }
-    data = res.json()
 
-    used_chips_raw = [c["name"].upper() for c in data.get("chips", [])]
-    chips_used_str = ", ".join(used_chips_raw) if used_chips_raw else "None"
+    data = res_hist.json()
 
+    chips_played = data.get("chips", [])
+    used_chips_raw = [c["name"].upper() for c in chips_played]
     remaining_chips = [c for c in ALL_CHIPS if c not in used_chips_raw]
-    chips_rem_str = (
-        ", ".join(remaining_chips) if remaining_chips else "All Used"
-    )
+    chips_rem_str = ", ".join(remaining_chips) if remaining_chips else "All Used"
 
-    chip_gws = {c["event"]: c["name"].lower() for c in data.get("chips", [])}
+    chip_gw_map = {c["event"]: c["name"].lower() for c in chips_played}
+
     current_history = data.get("current", [])
-
     history_up_to_gw = [
         gw for gw in current_history if gw.get("event", 0) <= target_gw
     ]
@@ -282,30 +299,54 @@ def calculate_saved_fts_and_history(entry_id, target_gw):
         gw.get("event_transfers_cost", 0) for gw in history_up_to_gw
     )
 
-    if target_gw <= 1 or not history_up_to_gw:
-        return {
-            "Chips Used": chips_used_str,
-            "Chips Remaining": chips_rem_str,
-            "Hits Cost": total_hits,
-            "Saved FTs": 1,
-        }
-
     fts_available = 1
+
     for gw_info in history_up_to_gw:
-        transfers_made = gw_info.get("event_transfers", 0)
-        chip_played = chip_gws.get(gw_info["event"], None)
-        if chip_played in ["wildcard", "freehit"]:
-            fts_available = min(5, fts_available + 1)
+        event_id = gw_info.get("event", 0)
+        raw_transfers = gw_info.get("event_transfers", 0)
+        active_chip = chip_gw_map.get(event_id, "")
+
+        if active_chip in ["wildcard", "freehit"]:
+            transfers_made = 0
         else:
-            fts_remaining = max(0, fts_available - transfers_made)
+            transfers_made = raw_transfers
+
+        fts_remaining = max(0, fts_available - transfers_made)
+
+        if event_id < target_gw:
             fts_available = min(5, fts_remaining + 1)
+        else:
+            fts_available = fts_remaining
 
     return {
-        "Chips Used": chips_used_str,
         "Chips Remaining": chips_rem_str,
         "Hits Cost": total_hits,
         "Saved FTs": fts_available,
     }
+
+
+def fetch_gw_transfers(entry_id, target_gw, player_dict):
+    t_url = f"https://fantasy.premierleague.com/api/entry/{entry_id}/transfers/"
+    res = requests.get(t_url)
+
+    if res.status_code != 200:
+        return "-", "-"
+
+    transfers = res.json()
+    gw_transfers = [t for t in transfers if t.get("event") == target_gw]
+
+    if not gw_transfers:
+        return "-", "-"
+
+    ins = []
+    outs = []
+    for t in gw_transfers:
+        p_in = player_dict.get(t.get("element_in"), "Unknown")
+        p_out = player_dict.get(t.get("element_out"), "Unknown")
+        ins.append(f'<span class="badge-in">⬆️ {p_in}</span>')
+        outs.append(f'<span class="badge-out">⬇️ {p_out}</span>')
+
+    return "<br>".join(ins), "<br>".join(outs)
 
 
 def fetch_manager_picks(entry_id, target_gw, player_dict):
@@ -323,6 +364,7 @@ def fetch_manager_picks(entry_id, target_gw, player_dict):
             "Bench": [],
             "GW_Pts": 0,
             "GW_Rank": "-",
+            "Active_Chip": "-",
         }
     p_data = res.json()
 
@@ -331,6 +373,9 @@ def fetch_manager_picks(entry_id, target_gw, player_dict):
     bench_pts = entry_hist.get("points_on_bench", 0)
     gw_pts = entry_hist.get("points", 0)
     gw_rank = entry_hist.get("rank", "-")
+
+    active_chip_raw = p_data.get("active_chip")
+    active_chip = active_chip_raw.upper() if active_chip_raw else "-"
 
     captain, vc, cap_id = "Unknown", "Unknown", None
     squad_ids, starting_ids, bench_ids = [], [], []
@@ -359,6 +404,7 @@ def fetch_manager_picks(entry_id, target_gw, player_dict):
         "Bench": bench_ids,
         "GW_Pts": gw_pts,
         "GW_Rank": gw_rank,
+        "Active_Chip": active_chip,
     }
 
 
@@ -380,12 +426,9 @@ player_obj_dict = {p["id"]: p for p in elements}
 
 
 # ------------------------------------------------------------------------------
-# CORE XP ROUTER WITH POSITIONAL DEFENSE & DEFCON MULTIPLIERS
+# CORE XP ROUTER
 # ------------------------------------------------------------------------------
 def compute_player_xp(p_obj):
-    """
-    Computes positionally aware baseline xP proxy factoring in DefCon for DEF/GKP.
-    """
     pos_type = p_obj.get("element_type", 3)
     form_val = float(p_obj.get("form", 0.0))
     xg_val = float(p_obj.get("expected_goals", 0.0))
@@ -396,19 +439,17 @@ def compute_player_xp(p_obj):
     f_list = next_fixtures_map.get(t_id, [])
     fdr = f_list[0]["fdr"] if f_list else 3
 
-    # Position 1 (GKP) & Position 2 (DEF): Defensive Multipliers + DefCon
     if pos_type in [1, 2]:
         fdr_cs_map = {1: 0.50, 2: 0.40, 3: 0.25, 4: 0.15, 5: 0.05}
         base_cs_prob = fdr_cs_map.get(fdr, 0.25)
 
-        # DefCon Solidity Multiplier: Higher defensive strength rating boosts CS odds
         def_strength = team_conceded_map.get(t_id, 1100)
         if def_strength >= 1250:
-            defcon_mult = 1.25  # Elite Defense
+            defcon_mult = 1.25
         elif def_strength >= 1050:
-            defcon_mult = 1.00  # Average Defense
+            defcon_mult = 1.00
         else:
-            defcon_mult = 0.75  # Leaky Defense
+            defcon_mult = 0.75
 
         cs_xp = (base_cs_prob * 4.0) * defcon_mult
 
@@ -421,8 +462,6 @@ def compute_player_xp(p_obj):
         else:
             attacking_xp = xgi_val * 0.60
             return round(cs_xp + attacking_xp + 2.0 + (form_val * 0.05), 2)
-
-    # Position 3 (MID) & Position 4 (FWD): Attacking xGI Proxy
     else:
         return round((form_val * 0.10) + (xgi_val * 0.75) + 2.0, 2)
 
@@ -614,12 +653,18 @@ with tab2:
                     hist = calculate_saved_fts_and_history(
                         mgr["entry"], selected_gw
                     )
+                    transfers_in_html, transfers_out_html = fetch_gw_transfers(
+                        mgr["entry"], selected_gw, player_dict
+                    )
+
                     prev_total = mgr["total"] - picks["GW_Pts"]
                     manager_data.append(
                         {
                             "mgr": mgr,
                             "picks": picks,
                             "hist": hist,
+                            "transfers_in": transfers_in_html,
+                            "transfers_out": transfers_out_html,
                             "prev_total": prev_total,
                         }
                     )
@@ -673,24 +718,28 @@ with tab2:
                             "Team": mgr["entry_name"],
                             "GW Pts": picks["GW_Pts"],
                             "Total Pts": mgr["total"],
-                            "Leader Gap": pts_str,
                             "Saved FTs": f"{hist['Saved FTs']} FT",
                             "Bank": f"£{picks['Bank']:.1f}m",
                             "Captain (VC)": f"{picks['Captain']} ({picks['VC']})",
-                            "Bench Pts": picks["Bench Pts"],
+
                             "Differentials": ", ".join(diff_names)
                             if diff_names
                             else "Identical Squad",
-                            "Chips Used": hist["Chips Used"],
+                            "Transfers In": item["transfers_in"],
+                            "Transfers Out": item["transfers_out"],
+                            "Bench Pts": picks["Bench Pts"],
+                            "GW Chip Used": picks["Active_Chip"],
                             "Chips Remaining": hist["Chips Remaining"],
                             "Hits": f"-{hist['Hits Cost']} pts",
                         }
                     )
 
-                st.dataframe(
-                    pd.DataFrame(rivals),
-                    use_container_width=True,
-                    hide_index=True,
+                df_rivals = pd.DataFrame(rivals)
+                
+                # Render using HTML to retain colored transfer badges
+                st.write(
+                    df_rivals.to_html(escape=False, index=False),
+                    unsafe_allow_html=True,
                 )
 
                 st.markdown("---")
@@ -1196,7 +1245,7 @@ with tab3:
                 )
 
                 # --------------------------------------------------------------
-                # 👑 CAPTAINCY ENGINE & INTUITION LOGIC
+                # CAPTAINCY ENGINE & INTUITION LOGIC
                 # --------------------------------------------------------------
                 st.markdown("---")
                 st.markdown("### 👑 AI Captaincy Advice & Manager's Eye Engine")
@@ -1221,7 +1270,6 @@ with tab3:
                     player_name = str(row.get("web_name", "")).lower()
                     clean_pname = re.sub(r"[^\w\s]", "", player_name)
 
-                    # Set-Piece Lookup
                     has_setpiece_duty = False
                     for surname, role_ranks in setpiece_db.items():
                         if surname in clean_pname or clean_pname in surname:
@@ -1453,7 +1501,6 @@ with tab3:
                         "⚪ No strict automatic chip triggers hit for this Gameweek."
                     )
 
-                # Manual Trigger Toggle for YOLO Wildcard / Free Hit Mode
                 col_chip_t1, col_chip_t2 = st.columns([1, 2])
                 with col_chip_t1:
                     enable_yolo_chip = st.toggle(
@@ -1477,7 +1524,6 @@ with tab3:
                         unsafe_allow_html=True,
                     )
 
-                    # Total Available Squad Budget Calculation
                     squad_value = (
                         sum(p["Cost_m"] for _, p in df_squad.iterrows())
                         if not df_squad.empty
@@ -1485,10 +1531,8 @@ with tab3:
                     )
                     total_budget = squad_value + my_picks.get("Bank", 0.0)
 
-                    # Build full player pool combining current squad + market elements
                     full_player_pool = []
 
-                    # Add current squad
                     for _, p_squad in df_squad.iterrows():
                         full_player_pool.append({
                             "ID": p_squad["id"],
@@ -1505,7 +1549,6 @@ with tab3:
                             "Is_Owned": True
                         })
 
-                    # Add market targets
                     for p_mkt in market_hotspots:
                         if p_mkt["ID"] not in set(df_squad["id"]):
                             p_mkt_entry = dict(p_mkt)
@@ -1513,10 +1556,8 @@ with tab3:
                             p_mkt_entry["Status"] = "🆕 Market Buy"
                             full_player_pool.append(p_mkt_entry)
 
-                    # Sort pooled assets by expected points
                     df_pool = pd.DataFrame(full_player_pool).sort_values(by="xP", ascending=False)
 
-                    # Draft Selection Logic
                     yolo_squad = []
                     team_counts = {}
                     pos_counts = {1: 0, 2: 0, 3: 0, 4: 0}
@@ -1569,17 +1610,27 @@ with tab3:
                         st.warning("Unable to assemble a valid 15-player squad within the selected budget.")
 
                 # --------------------------------------------------------------
-                # STRATEGIC TRANSFER THRESHOLDS (GUARANTEED 4-POSITIONAL CARDS)
+                # STRATEGIC TRANSFER THRESHOLDS & MULTI-TRANSFER HIT COMBOS
                 # --------------------------------------------------------------
                 st.markdown("---")
                 st.markdown("### 💡 Strategic Transfer Recommendations")
-                st.caption(
-                    "Displays the top tactical swap for each position (GKP, DEF, MID, FWD) matching price gain and market momentum."
-                )
 
                 available_fts = my_history.get("Saved FTs", 1)
-                xp_threshold = 2.5 if available_fts >= 1 else 4.5
-                transfer_type = "Free Transfer" if available_fts >= 1 else "-4 Hit"
+
+                if available_fts > 0:
+                    hit_cost = 0
+                    xp_threshold = 2.5
+                    transfer_label = f"Free Transfer ({available_fts} available)"
+                else:
+                    hit_cost = 4
+                    xp_threshold = 4.5
+                    transfer_label = "⚠️ -4 Point Hit Required (0 FTs remaining)"
+
+                st.caption(
+                    f"Current Status: **{transfer_label}**. Net advantage factors in the -{hit_cost} point hit penalty where applicable."
+                )
+
+                single_transfer_calls = []
 
                 for pos_code in [1, 2, 3, 4]:
                     pos_name = POSITION_MAP.get(pos_code)
@@ -1590,7 +1641,7 @@ with tab3:
                         pos_squad_players = pd.DataFrame()
 
                     best_pos_call = None
-                    max_pos_gain = -999.0
+                    max_net_gain = -999.0
 
                     if not pos_squad_players.empty:
                         for _, sell_p in pos_squad_players.iterrows():
@@ -1606,28 +1657,48 @@ with tab3:
                             ]
 
                             for target in replacements:
-                                gain = target["xP"] - current_xp
-                                if gain > max_pos_gain:
-                                    max_pos_gain = gain
-                                    best_pos_call = (sell_p, target, gain)
+                                raw_gain = target["xP"] - current_xp
+                                net_gain = raw_gain - hit_cost
+
+                                if net_gain > max_net_gain:
+                                    max_net_gain = net_gain
+                                    best_pos_call = (sell_p, target, raw_gain, net_gain)
 
                     if best_pos_call:
-                        sell_p, top_target, xp_gain = best_pos_call
-                        meets_thresh = xp_gain >= xp_threshold
+                        sell_p, top_target, raw_gain, net_gain = best_pos_call
+                        single_transfer_calls.append({
+                            "pos": pos_name,
+                            "pos_code": pos_code,
+                            "sell": sell_p,
+                            "buy": top_target,
+                            "raw_gain": raw_gain,
+                            "net_gain": net_gain
+                        })
+
+                        meets_thresh = net_gain >= (xp_threshold - hit_cost)
                         tag_color = "#059669" if meets_thresh else "#64748b"
-                        status_msg = (
-                            f"(Exceeds {xp_threshold} pts threshold)"
-                            if meets_thresh
-                            else "(Optional Upgrade)"
-                        )
+
+                        if hit_cost > 0:
+                            status_msg = (
+                                f"✅ Worth the -4 Hit (Net Gain >= +{xp_threshold - hit_cost:.1f} pts)"
+                                if meets_thresh
+                                else "❌ Avoid -4 Hit (Insufficient Net Gain)"
+                            )
+                        else:
+                            status_msg = (
+                                f"✅ Recommended Upgrade (>= +{xp_threshold:.1f} pts gain)"
+                                if meets_thresh
+                                else "⚪ Optional Upgrade"
+                            )
 
                         st.markdown(
                             f"""
                             <div class="rec-card" style="border-left-color: {tag_color};">
-                                🔄 <strong>Suggested Transfer Call ({transfer_type} — {pos_name}):</strong><br/>
+                                🔄 <strong>Suggested Transfer Call ({pos_name}):</strong><br/>
                                 <strong>OUT:</strong> {sell_p['web_name']} ({pos_name}) — Form: <code>{sell_p['Form_Float']}</code> | Price: <code>£{sell_p['Cost_m']:.1f}m</code> | Est. xP: <code>{sell_p['xP_Proxy']:.2f} pts</code><br/>
                                 <strong>IN:</strong> {top_target['Name']} ({top_target['Pos']}) — Est. xP: <code>{top_target['xP']:.2f} pts</code> | Market Status: <code>{top_target['Status']}</code> | Price: <code>{top_target['Price']}</code><br/>
-                                <strong>Projected Net Advantage:</strong> <code>+{xp_gain:.2f} pts gain</code> {status_msg}
+                                <strong>Raw xP Gain:</strong> <code>+{raw_gain:.2f} pts</code> | <strong>Hit Penalty:</strong> <code>-{hit_cost} pts</code><br/>
+                                <strong>Projected Net Advantage:</strong> <code>{net_gain:+.2f} pts</code> — <em>{status_msg}</em>
                             </div>
                             """,
                             unsafe_allow_html=True,
@@ -1641,3 +1712,74 @@ with tab3:
                             """,
                             unsafe_allow_html=True,
                         )
+
+                # --------------------------------------------------------------
+                # MULTI-PLAYER "HIT COMBO" MODELING ENGINE
+                # --------------------------------------------------------------
+                st.markdown("---")
+                st.markdown("### 💥 Multi-Player 'Hit Combo' Modeling Engine")
+                st.caption(
+                    "Simulates multi-transfer swaps (e.g., 2-player or 3-player moves) across positional boundaries, factoring in combined budget pooling and hit cost deductions."
+                )
+
+                valid_combos = [c for c in single_transfer_calls if c["raw_gain"] > 0]
+                valid_combos = sorted(valid_combos, key=lambda x: x["raw_gain"], reverse=True)
+
+                if len(valid_combos) >= 2:
+                    combo2 = valid_combos[:2]
+                    raw_gain_2 = sum(c["raw_gain"] for c in combo2)
+                    transfers_count_2 = 2
+                    
+                    extra_transfers_2 = max(0, transfers_count_2 - available_fts)
+                    combo2_hit_cost = extra_transfers_2 * 4
+                    net_gain_2 = raw_gain_2 - combo2_hit_cost
+
+                    c2_color = "#059669" if net_gain_2 > 0 else "#dc2626"
+
+                    p1_str = f"OUT: <strong>{combo2[0]['sell']['web_name']}</strong> ➔ IN: <strong>{combo2[0]['buy']['Name']}</strong>"
+                    p2_str = f"OUT: <strong>{combo2[1]['sell']['web_name']}</strong> ➔ IN: <strong>{combo2[1]['buy']['Name']}</strong>"
+
+                    st.markdown(
+                        f"""
+                        <div class="rec-card" style="border-left-color: {c2_color};">
+                            💥 <strong>2-Player Hit Combo ({transfers_count_2} Transfers):</strong><br/>
+                            1️⃣ {p1_str}<br/>
+                            2️⃣ {p2_str}<br/>
+                            <strong>Combined Raw xP Gain:</strong> <code>+{raw_gain_2:.2f} pts</code> | <strong>Hit Penalty ({extra_transfers_2} Extra Transfers):</strong> <code>-{combo2_hit_cost} pts</code><br/>
+                            <strong>Net Multi-Swap Advantage:</strong> <code>{net_gain_2:+.2f} pts</code> — <em>{'✅ Profitable Multi-Swap Combo' if net_gain_2 > 0 else '❌ Avoid Combo (Negative Net Value)'}</em>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                if len(valid_combos) >= 3:
+                    combo3 = valid_combos[:3]
+                    raw_gain_3 = sum(c["raw_gain"] for c in combo3)
+                    transfers_count_3 = 3
+                    
+                    extra_transfers_3 = max(0, transfers_count_3 - available_fts)
+                    combo3_hit_cost = extra_transfers_3 * 4
+                    net_gain_3 = raw_gain_3 - combo3_hit_cost
+
+                    c3_color = "#059669" if net_gain_3 > 0 else "#dc2626"
+
+                    p1_str = f"OUT: <strong>{combo3[0]['sell']['web_name']}</strong> ➔ IN: <strong>{combo3[0]['buy']['Name']}</strong>"
+                    p2_str = f"OUT: <strong>{combo3[1]['sell']['web_name']}</strong> ➔ IN: <strong>{combo3[1]['buy']['Name']}</strong>"
+                    p3_str = f"OUT: <strong>{combo3[2]['sell']['web_name']}</strong> ➔ IN: <strong>{combo3[2]['buy']['Name']}</strong>"
+
+                    st.markdown(
+                        f"""
+                        <div class="rec-card" style="border-left-color: {c3_color};">
+                            💥 <strong>3-Player Hit Combo ({transfers_count_3} Transfers):</strong><br/>
+                            1️⃣ {p1_str}<br/>
+                            2️⃣ {p2_str}<br/>
+                            3️⃣ {p3_str}<br/>
+                            <strong>Combined Raw xP Gain:</strong> <code>+{raw_gain_3:.2f} pts</code> | <strong>Hit Penalty ({extra_transfers_3} Extra Transfers):</strong> <code>-{combo3_hit_cost} pts</code><br/>
+                            <strong>Net Multi-Swap Advantage:</strong> <code>{net_gain_3:+.2f} pts</code> — <em>{'✅ Profitable Multi-Swap Combo' if net_gain_3 > 0 else '❌ Avoid Combo (Negative Net Value)'}</em>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                if len(valid_combos) < 2:
+                    st.caption("⚪ Insufficient positive single-transfer moves to construct a multi-swap combo for this Gameweek.")
