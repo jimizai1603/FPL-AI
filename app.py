@@ -493,7 +493,7 @@ with tab1:
         st.metric("⏳ Price Change Window", f"{hours_p}h {mins_p}m")
         st.caption("FPL algorithm updates player pricing daily at 01:30 UTC")
         st.markdown(
-    '<a href="https://fantasy.premierleague.com/en/price-changes" target="_blank" style="color: #0dc2626; font-weight: 800; font-size: 0.9rem; text-decoration: underline;">View ACTUAL FPL Price Changes HERE</a>',
+    '<a href="https://fantasy.premierleague.com/en/price-changes" target="_blank" style="color: #dc2626; font-weight: 800; font-size: 0.9rem; text-decoration: underline;">View ACTUAL FPL Price Changes HERE</a>',
     unsafe_allow_html=True,
             
 )
