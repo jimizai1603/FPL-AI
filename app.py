@@ -492,6 +492,7 @@ with tab1:
         mins_p, _ = divmod(remainder_p, 60)
         st.metric("⏳ Price Change Window", f"{hours_p}h {mins_p}m")
         st.caption("FPL algorithm updates player pricing daily at 01:30 UTC")
+        st.caption("[View ACTUAL FPL Price Changes HERE](https://fantasy.premierleague.com/en/price-changes)")
 
     with col_t2:
         if next_event and next_event.get("deadline_time"):
