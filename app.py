@@ -134,7 +134,7 @@ st.markdown(
 st.markdown(
     """
     <div class="executive-header">
-        <h1>⚽ FPL Master Executive Intelligence</h1>
+        <h1>⚽ FPL AI DASHBORD</h1>
         <span class="header-subtitle">Advanced Real-Time Market Analytics, Rival Mini-League Spy & Performance AI</span>
     </div>
     """,
@@ -144,8 +144,8 @@ st.markdown(
 # ------------------------------------------------------------------------------
 # GLOBAL CONSTANTS & API HELPERS
 # ------------------------------------------------------------------------------
-DEFAULT_LEAGUE_ID = "1304670"
-MY_TEAM_ID = "4224092"
+DEFAULT_LEAGUE_ID = ""
+MY_TEAM_ID = ""
 
 POSITION_MAP = {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
 ALL_CHIPS = ["WILDCARD", "FREEHIT", "BBOOST", "3XC"]
@@ -961,14 +961,14 @@ with tab3:
 
     col_ai_in1, col_ai_in2 = st.columns(2)
     with col_ai_in1:
-        user_team_id = st.text_input(
-            "Enter Your FPL Team ID:", value=MY_TEAM_ID, key="ai_my_id"
+        advisor_league_id = st.text_input(
+            "FPL Mini-League ID:",
+            value=DEFAULT_LEAGUE_ID,
+            key="ai_league_id"
         )
     with col_ai_in2:
-        advisor_league_id = st.text_input(
-            "Mini-League ID for Context:",
-            value=DEFAULT_LEAGUE_ID,
-            key="ai_league_id",
+        user_team_id = st.text_input(
+            "Your FPL Team ID:", value=MY_TEAM_ID, key="ai_my_id"
         )
 
     if user_team_id:
