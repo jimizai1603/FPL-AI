@@ -144,8 +144,8 @@ st.markdown(
 # ------------------------------------------------------------------------------
 # GLOBAL CONSTANTS & API HELPERS
 # ------------------------------------------------------------------------------
-DEFAULT_LEAGUE_ID = ""
-MY_TEAM_ID = ""
+DEFAULT_LEAGUE_ID = "1304670"
+MY_TEAM_ID = "4224092"
 
 POSITION_MAP = {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
 ALL_CHIPS = ["WILDCARD", "FREEHIT", "BBOOST", "3XC"]
